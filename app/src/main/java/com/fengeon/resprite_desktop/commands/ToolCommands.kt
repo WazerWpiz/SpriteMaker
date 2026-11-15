@@ -100,14 +100,21 @@ class ShapeCmd(
             strokeCap = Paint.Cap.BUTT
             strokeJoin = Paint.Join.MITER
         }
-        // A 1px stroke centred on an integer coordinate straddles the boundary
-        // between two pixel rows and lands at ~50% alpha on both. Offset stroked
-        // shapes by half a pixel so the stroke covers exactly one row at full
-        // opacity. Filled shapes keep integer bounds so they cover exactly the
-        // pixels the coordinates name.
-        val off = if (filled) 0f else 0.5f
-        val ax = x0 + off; val ay = y0 + off
-        val bx = x1 + off; val by = y1 + off
+        // Two coordinate conventions meet here.
+        //
+        // The API is INCLUSIVE: draw_rect(x0=2, x1=8) must paint pixels 2..8.
+        // Canvas.drawRect/drawOval take an EXCLUSIVE right/bottom edge, so a filled
+        // shape adds 1 to the far edge. Without that, x1 itself was never painted
+        // and a one-pixel rect (x0 == x1) painted nothing at all.
+        //
+        // A stroked shape is drawn as a line/outline, where a 1px stroke centred on
+        // an integer coordinate straddles two pixel rows at ~50% alpha each. Stroked
+        // shapes are offset by half a pixel so the stroke covers exactly one row at
+        // full opacity.
+        val far = if (filled) 1f else 0.5f
+        val near = if (filled) 0f else 0.5f
+        val ax = x0 + near; val ay = y0 + near
+        val bx = x1 + far; val by = y1 + far
         when (shape) {
             Shape.Line -> c.drawLine(ax, ay, bx, by, p)
             Shape.Rect -> {
