@@ -42,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardActions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import com.fengeon.resprite_desktop.net.AgentClient
 import com.fengeon.resprite_desktop.net.AgentConfig
 import com.fengeon.resprite_desktop.net.McpServer

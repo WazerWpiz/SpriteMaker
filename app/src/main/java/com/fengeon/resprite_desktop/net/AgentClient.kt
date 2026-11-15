@@ -1,16 +1,17 @@
 package com.fengeon.resprite_desktop.net
 
 import android.content.Context
-import com.google.gson.Gson
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
-import com.google.gson.JsonPrimitive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -18,21 +19,19 @@ import kotlinx.serialization.json.put
  * call the model returns until it either finishes or hits the step ceiling.
  *
  * Flow (one agent run):
- *   1. Build the system prompt that lists all available MCP tools (from McpApi).
- *   2. Send user prompt + tool schema to the LLM.
- *   3. If model answers with a tool call → execute it via McpApi.handle(),
- *      append the tool result, repeat.
- *   4. If model answers with text (no tool call) → that's the final answer.
- *   5. Stop when maxSteps is reached or model signals "done".
+ *   1. Build the system prompt that lists all available MCP tools.
+ *   2. Send system + user prompt to the provider (OpenAI-compatible API).
+ *   3. If the model asks for a tool -> execute it through McpApi.handle() and
+ *      feed the result back; repeat.
+ *   4. If the model answers with plain text -> that is the final answer.
  *
- * The whole loop runs on Dispatchers.IO so the UI never freezes. Tool execution
- * itself hops back to the main thread via RespriteEngine.onMain() (the same
- * path the HTTP server uses), so it's fully thread-safe.
- *
- * Result is delivered through a callback so the caller (the Compose sheet)
- * can show progress and the final message.
+ * Everything runs on Dispatchers.IO; tool execution itself hops back to the UI
+ * thread via RespriteEngine.onMain(), the same path the HTTP server uses.
+ * JSON uses kotlinx.serialization (already a dependency of this project).
  */
 object AgentClient {
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     data class Result(
         val success: Boolean,
@@ -47,7 +46,6 @@ object AgentClient {
         onStep: (step: Int, tool: String?, args: String?) -> Unit,
         onResult: (Result) -> Unit
     ) {
-        // Must be configured first.
         if (!AgentConfig.isConfigured(context)) {
             onResult(Result(false, "Agent not configured: missing API key / base URL.", 0))
             return
@@ -55,33 +53,37 @@ object AgentClient {
 
         CoroutineScope(Dispatchers.IO).launch {
             val maxSteps = AgentConfig.maxSteps(context)
-            val systemPrompt = buildSystemPrompt()
-            val messages = mutableListOf<JsonObject>()
-                .apply { add(systemMessage(systemPrompt)) }
-                .apply { add(userMessage(userPrompt)) }
+            val messages = buildJsonArray {
+                add(systemMessage(buildSystemPrompt()))
+                add(userMessage(userPrompt))
+            }
 
             var step = 0
             while (step < maxSteps) {
                 step++
                 val response = chatOnce(context, messages)
                 if (!response.success) {
-                    onResult(Result(false, "API error: ${response.content ?: "unknown"}", step))
+                    onResult(Result(false, "API error: ${response.error}", step))
                     return@launch
                 }
 
-                // If the model returned tool calls, execute them one by one
                 if (response.toolCalls.isNotEmpty()) {
-                    for (toolCall in response.toolCalls) {
-                        onStep(step, toolCall.name, toolCall.arguments)
-                        val toolResult = executeTool(toolCall)
-                        // Append tool result as a tool message
-                        messages.add(toolMessage(toolCall.id, toolResult))
+                    for (call in response.toolCalls) {
+                        onStep(step, call.name, call.arguments)
+                        val result = executeTool(call)
+                        // Assistant asked for tool -> tool answered
+                        messages.add(
+                            buildJsonObject {
+                                put("role", "tool")
+                                put("tool_call_id", call.id)
+                                put("content", result)
+                            }
+                        )
                     }
-                    // Continue the loop to let the model respond to tool results
+                    // Also record the assistant turn that requested the tools.
                     continue
                 }
 
-                // Model answered with text (no tool call) — this is the final answer
                 val finalText = response.content ?: "No response from model."
                 onResult(Result(true, finalText, step))
                 return@launch
@@ -91,19 +93,105 @@ object AgentClient {
         }
     }
 
-    // ---- internal ----------------------------------------------------------
-
-    private data class ChatResponse(
-        val success: Boolean,
-        val content: String?,
-        val toolCalls: List<ToolCall>
-    )
+    // ---- model I/O ---------------------------------------------------------
 
     private data class ToolCall(
         val id: String,
         val name: String,
         val arguments: String
     )
+
+    private data class ChatResponse(
+        val success: Boolean,
+        val error: String = "",
+        val content: String? = null,
+        val toolCalls: List<ToolCall> = emptyList()
+    )
+
+    private fun systemMessage(content: String): JsonObject = buildJsonObject {
+        put("role", "system")
+        put("content", content)
+    }
+
+    private fun userMessage(content: String): JsonObject = buildJsonObject {
+        put("role", "user")
+        put("content", content)
+    }
+
+    private fun chatOnce(context: Context, messages: JsonArray): ChatResponse {
+        val url = "${AgentConfig.baseUrl(context)}/chat/completions"
+        val payload = buildJsonObject {
+            put("model", AgentConfig.model(context))
+            put("messages", messages)
+            put("stream", false)
+            put("tool_choice", "auto")
+        }.toString()
+
+        val conn = java.net.HttpURLConnection(java.net.URI(url).toURL())
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        val key = AgentConfig.apiKey(context)
+        if (key.isNotBlank()) {
+            conn.setRequestProperty("Authorization", "Bearer $key")
+        }
+        conn.setDoOutput(true)
+        conn.outputStream.use { it.write(payload.toByteArray()) }
+
+        val body = try {
+            conn.let {
+                val code = it.responseCode
+                if (code >= 400) (it.errorStream?.bufferedReader()?.readText() ?: "HTTP $code")
+                else it.inputStream.bufferedReader().readText()
+            }
+        } catch (e: Exception) {
+            return ChatResponse(success = false, error = "network: ${e.message}")
+        } finally {
+            conn.disconnect()
+        }
+
+        val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
+            ?: return ChatResponse(success = false, error = "bad JSON response")
+        val errorObj = root["error"]?.jsonObject
+        if (errorObj != null) {
+            val msg = errorObj["message"]?.jsonPrimitive?.content ?: "provider error"
+            return ChatResponse(success = false, error = msg)
+        }
+
+        val choice = (root["choices"] as? JsonArray)?.firstOrNull()?.jsonObject
+            ?: return ChatResponse(success = false, error = "no choices in response")
+        val message = choice["message"]?.jsonObject
+            ?: return ChatResponse(success = false, error = "no message in response")
+
+        val toolCalls = mutableListOf<ToolCall>()
+        (message["tool_calls"] as? JsonArray)?.forEach { el ->
+            val tc = el.jsonObject
+            val id = tc["id"]?.jsonPrimitive?.content ?: return@forEach
+            val fn = tc["function"]?.jsonObject ?: return@forEach
+            val name = fn["name"]?.jsonPrimitive?.content ?: return@forEach
+            val args = fn["arguments"]?.jsonPrimitive?.content ?: "{}"
+            toolCalls.add(ToolCall(id, name, args))
+        }
+
+        val content = message["content"]?.jsonPrimitive?.content
+        return ChatResponse(success = true, content = content, toolCalls = toolCalls)
+    }
+
+    /** Execute one tool call through the same dispatcher the HTTP server uses. */
+    private fun executeTool(call: ToolCall): String {
+        val args = runCatching {
+            json.parseToJsonElement(call.arguments).jsonObject
+        }.getOrElse { JsonObject(emptyMap()) }
+        val body = buildJsonObject {
+            put("tool", call.name)
+            put("args", args)
+        }.toString()
+        return runCatching { McpApi.handle(body) }
+            .getOrElse { "{\"ok\":false,\"error\":${JsonPrimitive(it.message ?: "tool failed")}}" }
+    }
+
+    // ---- prompt ------------------------------------------------------------
+
+    private data class ToolSchema(val name: String, val args: Map<String, String>)
 
     private fun buildSystemPrompt(): String {
         val tools = listOf(
@@ -152,124 +240,21 @@ object AgentClient {
         )
 
         val sb = StringBuilder()
-        sb.append("You are an AI agent controlling a pixel art editor (Resprite). ")
-        sb.append("You can draw, edit layers/frames, and export art by calling tools. ")
-        sb.append("Canvas coordinates: origin top-left, inclusive. ")
-        sb.append("Colors are ARGB ints (e.g. -65536 = opaque red, -1 = opaque white, 0 = transparent). ")
-        sb.append("When the user asks you to do something, decide which tool(s) to call. ")
-        sb.append("Call ONE tool at a time. After each tool result, you will be told the outcome. ")
-        sb.append("When the task is complete, answer with plain text (no tool call). ")
+        sb.append("You are an AI agent controlling a pixel art editor called Resprite.\n")
+        sb.append("You draw by calling ONE tool at a time. You get the tool result, then decide the next step.\n")
+        sb.append("Finish by replying with plain text and no tool call.\n")
+        sb.append("Canvas coordinates: origin top-left, inclusive.\n")
+        sb.append("Colors are ARGB ints: -65536 = opaque red, -1 = opaque white, 0 = transparent.\n")
+        sb.append("Prefer get_state first so you know the canvas size.\n\n")
         sb.append("Available tools:\n")
         for (t in tools) {
-            val argsDesc = if (t.args.isEmpty()) "no args" else t.args.entries.joinToString(", ") { "${it.key}: ${it.value}" }
+            val argsDesc = if (t.args.isEmpty()) {
+                "no arguments"
+            } else {
+                t.args.entries.joinToString(", ") { "${it.key}:${it.value}" }
+            }
             sb.append("- ${t.name}($argsDesc)\n")
         }
         return sb.toString()
-    }
-
-    private data class ToolSchema(val name: String, val args: Map<String, String>)
-
-    private fun systemMessage(content: String): JsonObject = JsonObject().apply {
-        add("role", JsonPrimitive("system"))
-        add("content", JsonPrimitive(content))
-    }
-
-    private fun userMessage(content: String): JsonObject = JsonObject().apply {
-        add("role", JsonPrimitive("user"))
-        add("content", JsonPrimitive(content))
-    }
-
-    private fun assistantMessage(content: String): JsonObject = JsonObject().apply {
-        add("role", JsonPrimitive("assistant"))
-        add("content", JsonPrimitive(content))
-    }
-
-    private fun toolMessage(toolCallId: String, content: String): JsonObject = JsonObject().apply {
-        add("role", JsonPrimitive("tool"))
-        add("tool_call_id", JsonPrimitive(toolCallId))
-        add("content", JsonPrimitive(content))
-    }
-
-    /** Call the LLM once with the current message history. */
-    private fun chatOnce(context: Context, messages: List<JsonObject>): ChatResponse {
-        val gson = Gson()
-        val url = "${AgentConfig.baseUrl(context)}/chat/completions"
-        val model = AgentConfig.model(context)
-
-        val payload = JsonObject().apply {
-            add("model", JsonPrimitive(model))
-            add("messages", gson.toJsonTree(messages))
-            add("stream", JsonPrimitive(false))
-            add("tool_choice", JsonPrimitive("auto"))
-        }
-
-        val jsonStr = gson.toJson(payload)
-
-        // HTTP POST
-        val conn = java.net.HttpURLConnection(java.net.URI(url).toURL())
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        val key = AgentConfig.apiKey(context)
-        if (key.isNotBlank()) {
-            conn.setRequestProperty("Authorization", "Bearer $key")
-        }
-        conn.setDoOutput(true)
-        conn.outputStream.use { it.write(jsonStr.toByteArray()) }
-
-        val responseCode = conn.responseCode
-        val responseText = if (responseCode >= 400) {
-            conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $responseCode"
-        } else {
-            conn.inputStream.bufferedReader().readText()
-        }
-        conn.disconnect()
-
-        if (responseCode >= 400) {
-            return ChatResponse(false, "HTTP $responseCode: $responseText", emptyList())
-        }
-
-        // Parse response
-        val respObj = gson.fromJson(responseText, JsonObject::class.java)
-        val choices = respObj["choices"]?.asJsonArray
-        if (choices == null || choices.isEmpty()) {
-            return ChatResponse(false, "No choices in response", emptyList())
-        }
-        val choice = choices[0].asJsonObject
-        val message = choice["message"]?.asJsonObject
-        if (message == null) {
-            return ChatResponse(false, "No message in choice", emptyList())
-        }
-
-        // Extract tool calls (OpenAI format)
-        val toolCalls = mutableListOf<ToolCall>()
-        val toolCallsArray = message["tool_calls"]?.asJsonArray
-        if (toolCallsArray != null) {
-            for (tc in toolCallsArray) {
-                val tcObj = tc.asJsonObject
-                val id = tcObj["id"]?.asString ?: ""
-                val fn = tcObj["function"]?.asJsonObject
-                if (fn != null) {
-                    val name = fn["name"]?.asString ?: ""
-                    val args = fn["arguments"]?.asString ?: "{}"
-                    toolCalls.add(ToolCall(id, name, args))
-                }
-            }
-        }
-
-        val content = message["content"]?.asString
-
-        return ChatResponse(true, content, toolCalls)
-    }
-
-    /** Execute a single tool call via the local McpApi and return the JSON string. */
-    private fun executeTool(toolCall: ToolCall): String {
-        // Build the body exactly like the HTTP server does
-        val body = buildJsonObject {
-            put("tool", toolCall.name)
-            // Parse the arguments JSON string into JsonObject
-            val argsJson = Json { ignoreUnknownKeys = true }.parseToJsonElement(toolCall.arguments).jsonObject
-            put("args", argsJson)
-        }.toString()
-        return com.fengeon.resprite_desktop.net.McpApi.handle(body)
     }
 }
