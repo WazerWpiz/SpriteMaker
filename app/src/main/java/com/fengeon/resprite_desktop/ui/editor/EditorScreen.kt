@@ -59,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -118,6 +119,7 @@ fun EditorScreen() {
     var version by remember { mutableStateOf(0L) }
     var statusText by remember { mutableStateOf("ready") }
     var layersOpen by remember { mutableStateOf(false) }
+    var zoomPct by remember { mutableStateOf(100) }
 
     fun bump() { version = System.nanoTime() }
     fun activeCellId(): String = state.ensureCell(state.selectedLayerIndex, state.selectedFrameIndex)
@@ -269,6 +271,7 @@ fun EditorScreen() {
                                 }
                             }
                         },
+                        onZoomChange = { z -> zoomPct = (z * 100).toInt() },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -303,6 +306,7 @@ fun EditorScreen() {
                 IconButton(onClick = { layersOpen = true }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Filled.List, "Layers", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                 }
+                Text("${state.canvasWidth}×${state.canvasHeight}  ${zoomPct}%", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 Text(statusText, color = C.statusText, fontSize = 11.sp)
             }
         }

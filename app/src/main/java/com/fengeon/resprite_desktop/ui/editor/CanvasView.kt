@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -52,12 +53,14 @@ fun CanvasView(
     onStrokeStart: (x: Int, y: Int) -> Unit,
     onStrokeMove: (x0: Int, y0: Int, x1: Int, y1: Int) -> Unit,
     onStrokeEnd: (startX: Int, startY: Int, endX: Int, endY: Int) -> Unit,
+    onZoomChange: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val canvasColors = rsColors
     val containerSize = remember { mutableStateOf(IntSize.Zero) }
     val userScale = remember { mutableStateOf(1f) }
     val userPan = remember { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(userScale.value) { onZoomChange(userScale.value) }
 
     Canvas(
         modifier = modifier
@@ -81,7 +84,7 @@ fun CanvasView(
                             multi = true
                             val zoom = event.calculateZoom()
                             val pan = event.calculatePan()
-                            if (zoom != 1f) userScale.value = (userScale.value * zoom).coerceIn(0.25f, 32f)
+                            if (zoom != 1f) { userScale.value = (userScale.value * zoom).coerceIn(0.25f, 32f); onZoomChange(userScale.value) }
                             userPan.value += pan
                             event.changes.forEach { it.consume() }
                         } else if (!multi) {
