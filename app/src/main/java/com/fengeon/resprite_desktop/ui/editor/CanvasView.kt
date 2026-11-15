@@ -12,7 +12,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
@@ -21,15 +24,9 @@ import kotlin.math.min
 
 enum class Tool { Pencil, Eraser, Fill, Line, Rect, Ellipse, Select, Move, Eyedropper, Gradient }
 
-/** Pure conversion from screen coords to bitmap pixel coords. Top-level so it
- *  is not captured inside the gesture lambda (which crashed the IR backend). */
 private fun screenToPixel(
-    pos: Offset,
-    containerSize: IntSize,
-    userScale: Float,
-    userPan: Offset,
-    bitmapWidth: Int,
-    bitmapHeight: Int
+    pos: Offset, containerSize: IntSize, userScale: Float, userPan: Offset,
+    bitmapWidth: Int, bitmapHeight: Int
 ): Pair<Int, Int> {
     if (containerSize.width == 0 || containerSize.height == 0) return 0 to 0
     val fitScale = min(
@@ -82,9 +79,7 @@ fun CanvasView(
                             multi = true
                             val zoom = event.calculateZoom()
                             val pan = event.calculatePan()
-                            if (zoom != 1f) {
-                                userScale.value = (userScale.value * zoom).coerceIn(0.25f, 32f)
-                            }
+                            if (zoom != 1f) userScale.value = (userScale.value * zoom).coerceIn(0.25f, 32f)
                             userPan.value += pan
                             event.changes.forEach { it.consume() }
                         } else if (!multi) {
@@ -133,12 +128,32 @@ fun CanvasView(
             val drawH = composite.height * scale
             val originX = (cs.width - drawW) / 2f
             val originY = (cs.height - drawH) / 2f
+            val finalX = originX + userPan.value.x
+            val finalY = originY + userPan.value.y
+
+            // Draw checkerboard background
+            val checkSize = 8f * scale
+            if (checkSize > 1f) {
+                val cols = (drawW / checkSize).toInt()
+                val rows = (drawH / checkSize).toInt()
+                for (r in 0..rows) {
+                    for (c in 0..cols) {
+                        val color = if ((r + c) % 2 == 0) Color(0xFFCCCCCC) else Color(0xFFFFFFFF)
+                        drawRect(
+                            color = color,
+                            topLeft = Offset(finalX + c * checkSize, finalY + r * checkSize),
+                            size = Size(
+                                min(checkSize, finalX + drawW - (finalX + c * checkSize)),
+                                min(checkSize, finalY + drawH - (finalY + r * checkSize))
+                            )
+                        )
+                    }
+                }
+            }
+
             drawImage(
                 image = composite.asImageBitmap(),
-                dstOffset = IntOffset(
-                    (originX + userPan.value.x).toInt(),
-                    (originY + userPan.value.y).toInt()
-                ),
+                dstOffset = IntOffset(finalX.toInt(), finalY.toInt()),
                 dstSize = IntSize(drawW.toInt(), drawH.toInt())
             )
         }
