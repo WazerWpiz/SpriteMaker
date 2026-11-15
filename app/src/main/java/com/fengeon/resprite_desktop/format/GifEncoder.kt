@@ -19,6 +19,9 @@ object GifEncoder {
 
     private const val TRANSPARENT = 0
 
+    /** Index 0 is transparency, so at most this many colours fit the 256-entry table. */
+    private const val MAX_COLOURS = 255
+
     /**
      * @param width  canvas width in pixels
      * @param height canvas height in pixels
@@ -109,20 +112,34 @@ object GifEncoder {
     // ---- palette ---------------------------------------------------------
 
     private fun buildPalette(frames: List<IntArray>): List<Int> {
+        // A `break` in the pixel loop only leaves that loop, so the outer frame
+        // loop needs an explicit stop flag. Without it the set kept growing past
+        // the 256-entry table size on every following frame, and the extra indices
+        // were truncated to a byte — producing wrong or transparent pixels.
         val exact = LinkedHashSet<Int>()
-        for (f in frames) for (p in f) {
-            if ((p ushr 24) and 0xFF < 128) continue
-            exact.add(p and 0xFFFFFF)
-            if (exact.size > 255) break
+        var overflow = false
+        outer@ for (f in frames) {
+            for (p in f) {
+                if ((p ushr 24) and 0xFF < 128) continue
+                val rgb = p and 0xFFFFFF
+                if (exact.size < MAX_COLOURS) {
+                    exact.add(rgb)
+                } else if (rgb !in exact) {
+                    overflow = true
+                    break@outer
+                }
+            }
         }
-        if (exact.size <= 255) return listOf(0) + exact.toList()
+        if (!overflow) return listOf(0) + exact.toList()
 
         // Too many colours: bucket to 5 bits per channel and keep the first 255.
         val coarse = LinkedHashSet<Int>()
-        for (f in frames) for (p in f) {
-            if ((p ushr 24) and 0xFF < 128) continue
-            coarse.add(quantise(p and 0xFFFFFF))
-            if (coarse.size > 255) break
+        coarseOuter@ for (f in frames) {
+            for (p in f) {
+                if ((p ushr 24) and 0xFF < 128) continue
+                coarse.add(quantise(p and 0xFFFFFF))
+                if (coarse.size == MAX_COLOURS) break@coarseOuter
+            }
         }
         return listOf(0) + coarse.toList()
     }
@@ -165,8 +182,19 @@ object GifEncoder {
         var bitBuffer = 0
         var bitCount = 0
 
-        fun flushBlock() {
-            if (block.size() == 0) return
+        /**
+         * Writes the pending block(s) as 255-byte sub-blocks.
+         *
+         * A zero-length sub-block ENDS this image's LZW data, so the terminator is
+         * only written when [terminate] is set (i.e. after the last block). Writing
+         * it while flushing a full 255-byte block mid-stream cut the stream short:
+         * viewers then saw only the first frame or two of a long animation.
+         */
+        fun flushBlock(terminate: Boolean) {
+            if (block.size() == 0) {
+                if (terminate) out.write(0)
+                return
+            }
             val bytes = block.toByteArray()
             var offset = 0
             while (offset < bytes.size) {
@@ -175,8 +203,8 @@ object GifEncoder {
                 out.write(bytes, offset, chunk)
                 offset += chunk
             }
-            out.write(0)
             block.reset()
+            if (terminate) out.write(0)
         }
 
         fun emit(code: Int) {
@@ -186,7 +214,7 @@ object GifEncoder {
                 block.write(bitBuffer and 0xFF)
                 bitBuffer = bitBuffer ushr 8
                 bitCount -= 8
-                if (block.size() >= 255) flushBlock()
+                if (block.size() >= 255) flushBlock(false)
             }
         }
 
@@ -217,9 +245,9 @@ object GifEncoder {
 
         if (bitCount > 0) {
             block.write(bitBuffer and 0xFF)
-            if (block.size() >= 255) flushBlock()
+            if (block.size() >= 255) flushBlock(false)
         }
-        flushBlock()
+        flushBlock(true)
     }
 
     private fun writeShort(out: ByteArrayOutputStream, value: Int) {
