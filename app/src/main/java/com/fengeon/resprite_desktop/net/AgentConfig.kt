@@ -40,6 +40,21 @@ object AgentConfig {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     var provider: String = PROVIDER_OPENROUTER
+        private set
+
+    /**
+     * Restores the persisted provider into memory.
+     *
+     * Without this, [provider] always reset to OpenRouter on a cold start even
+     * after the user picked NVIDIA, so the chip row and the stored preference
+     * disagreed — and the chip row made isConfigured() test for the wrong
+     * provider. Call it once before reading any value from this object.
+     */
+    fun load(context: Context) {
+        provider = prefs(context).getString(KEY_PROVIDER, PROVIDER_OPENROUTER)
+            ?.takeIf { it.isNotBlank() }
+            ?: PROVIDER_OPENROUTER
+    }
 
     /** Base URL of the chat-completions endpoint (without the path). */
     fun baseUrl(context: Context, providerId: String = provider): String = when (providerId) {

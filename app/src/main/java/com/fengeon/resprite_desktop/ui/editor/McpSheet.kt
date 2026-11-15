@@ -285,6 +285,9 @@ fun McpSheet(onDismiss: () -> Unit) {
             )
 
             val agentConfig = AgentConfig
+            // Load the persisted provider first, otherwise the chip row would
+            // show OpenRouter after a restart while the prefs say NVIDIA.
+            AgentConfig.load(context)
             var agentProvider by remember { mutableStateOf(agentConfig.provider) }
             var agentApiKey by remember { mutableStateOf(agentConfig.apiKey(context)) }
             var agentKeyVisible by remember { mutableStateOf(false) }
