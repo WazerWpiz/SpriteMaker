@@ -92,8 +92,13 @@ class ShapeCmd(
             this.color = ink
             this.strokeWidth = strokeWidth.toFloat()
             style = if (filled) Paint.Style.FILL else Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
+            // Pixel art must be hard-edged. With anti-aliasing on (the Paint
+            // default) a curved or diagonal edge lands at partial alpha, so the
+            // outline reads as muddy grey and neighbouring pixels bleed. Off, each
+            // pixel is either fully painted or untouched.
+            isAntiAlias = false
+            strokeCap = Paint.Cap.BUTT
+            strokeJoin = Paint.Join.MITER
         }
         // A 1px stroke centred on an integer coordinate straddles the boundary
         // between two pixel rows and lands at ~50% alpha on both. Offset stroked
