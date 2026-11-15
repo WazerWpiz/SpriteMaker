@@ -67,7 +67,7 @@ object McpApi {
         "ping", "help",
         "get_state", "get_canvas", "get_layer_canvas", "get_pixel", "get_palette",
         "draw_pixel", "draw_pixels", "draw_line", "draw_rect", "draw_ellipse", "draw_polyline",
-        "fill", "erase_pixel", "clear_layer",
+        "fill", "erase_pixel", "erase_pixels", "clear_layer",
         "set_color", "set_secondary_color",
         "add_layer", "delete_layer", "duplicate_layer", "move_layer",
         "set_layer_visible", "set_layer_locked", "set_layer_opacity", "rename_layer",
@@ -104,6 +104,7 @@ object McpApi {
         "draw_polyline" -> polyline(a)
         "fill" -> fill(a)
         "erase_pixel" -> erasePixel(a)
+        "erase_pixels" -> erasePixels(a)
         "clear_layer" -> clearLayer()
 
         // colours
@@ -322,6 +323,23 @@ object McpApi {
             RespriteEngine.undo.execute(s, PaintStrokeCmd(cellId, listOf(x to y), 0, eraser = true))
             RespriteEngine.touch()
             okResult("erased", "$x,$y")
+        }
+    }
+
+    private fun erasePixels(a: JsonObject): String {
+        val pts = a["points"] as? JsonArray ?: throw IllegalArgumentException("points must be an array of [x,y]")
+        return RespriteEngine.onMain {
+            val s = RespriteEngine.state
+            val cellId = s.ensureCell(s.selectedLayerIndex, s.selectedFrameIndex)
+            val list = ArrayList<Pair<Int, Int>>(pts.size)
+            for (p in pts) {
+                val arr = p as? JsonArray ?: continue
+                if (arr.size < 2) continue
+                list.add(arr[0].jsonPrimitive.int to arr[1].jsonPrimitive.int)
+            }
+            RespriteEngine.undo.execute(s, PixelSetCmd(cellId, list, 0, eraser = true))
+            RespriteEngine.touch()
+            okResult("erased", list.size.toString())
         }
     }
 
