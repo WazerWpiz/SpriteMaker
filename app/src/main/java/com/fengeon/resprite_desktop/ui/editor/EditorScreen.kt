@@ -284,6 +284,10 @@ fun EditorScreen() {
                             }
                         },
                         onZoomChange = { z -> zoomPct = (z * 100).toInt() },
+                        // A second finger turns the gesture into a pinch; no onStrokeEnd
+                        // follows, so close the stroke here or it would stay active and
+                        // a later move could append to a finished undo entry.
+                        onStrokeCancel = { activeStroke.value = null },
                         modifier = Modifier.fillMaxSize()
                     )
                 }

@@ -55,6 +55,7 @@ fun CanvasView(
     onStrokeMove: (x0: Int, y0: Int, x1: Int, y1: Int) -> Unit,
     onStrokeEnd: (startX: Int, startY: Int, endX: Int, endY: Int) -> Unit,
     onZoomChange: (Float) -> Unit = {},
+    onStrokeCancel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val canvasColors = rsColors
@@ -82,6 +83,7 @@ fun CanvasView(
                     while (event.changes.any { it.pressed }) {
                         val active = event.changes.count { it.pressed }
                         if (active >= 2) {
+                            if (!multi) onStrokeCancel()
                             multi = true
                             val zoom = event.calculateZoom()
                             val pan = event.calculatePan()

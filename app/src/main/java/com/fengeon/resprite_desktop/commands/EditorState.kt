@@ -52,7 +52,39 @@ class EditorState(
             val newCell = CellData(id = UUID.randomUUID().toString())
             mutateLayer(layerIndex) { it.copy(cells = it.cells + newCell) }
         }
-        return document.layerDatas[layerIndex].cells[frameIndex].id
+        val layer = document.layerDatas[layerIndex]
+        val cell = layer.cells[frameIndex]
+        ensureBitmap(cell)
+        return cell.id
+    }
+
+    /**
+     * Guarantees a backing bitmap exists for [cell]. ensureCell() only proves the
+     * cell is declared in the document; nothing created its pixels, so on a fresh
+     * document every paint command found no bitmap and silently did nothing. A new
+     * cell gets a canvas-sized bitmap and its bounds are stretched to match, which
+     * is what the original Resprite layout does for a full-canvas cell.
+     */
+    fun ensureBitmap(cell: CellData): Bitmap {
+        cellBitmaps[cell.id]?.let { return it }
+        val w = canvasWidth.coerceAtLeast(1)
+        val h = canvasHeight.coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        cellBitmaps[cell.id] = bmp
+        if (cell.bounds.size.width <= 0 || cell.bounds.size.height <= 0) {
+            val layers = document.layerDatas.toMutableList()
+            val idx = layers.indexOfFirst { l -> l.cells.any { it.id == cell.id } }
+            if (idx >= 0) {
+                val cells = layers[idx].cells.toMutableList()
+                val ci = cells.indexOfFirst { it.id == cell.id }
+                if (ci >= 0) {
+                    cells[ci] = cells[ci].copy(bounds = cells[ci].bounds.copy(size = Size(w, h)))
+                    layers[idx] = layers[idx].copy(cells = cells)
+                    document = document.copy(layerDatas = layers)
+                }
+            }
+        }
+        return bmp
     }
 
     fun mutateLayer(index: Int, fn: (LayerData) -> LayerData) {
