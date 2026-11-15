@@ -53,26 +53,44 @@ object AgentClient {
 
         CoroutineScope(Dispatchers.IO).launch {
             val maxSteps = AgentConfig.maxSteps(context)
-            val messages = buildJsonArray {
-                add(systemMessage(buildSystemPrompt()))
-                add(userMessage(userPrompt))
-            }
+            // Conversation history. A mutable list of messages, serialised to a
+            // JsonArray on every request (kotlinx JsonArray is immutable).
+            val history = mutableListOf(systemMessage(buildSystemPrompt()), userMessage(userPrompt))
 
             var step = 0
             while (step < maxSteps) {
                 step++
-                val response = chatOnce(context, messages)
+                val response = chatOnce(context, history)
                 if (!response.success) {
                     onResult(Result(false, "API error: ${response.error}", step))
                     return@launch
                 }
 
                 if (response.toolCalls.isNotEmpty()) {
+                    // Record the assistant turn that requested the tools, so the
+                    // provider sees a coherent conversation on the next call.
+                    history.add(
+                        buildJsonObject {
+                            put("role", "assistant")
+                            put("content", "")
+                            put("tool_calls", buildJsonArray {
+                                for (call in response.toolCalls) {
+                                    add(buildJsonObject {
+                                        put("id", call.id)
+                                        put("type", "function")
+                                        put("function", buildJsonObject {
+                                            put("name", call.name)
+                                            put("arguments", call.arguments)
+                                        })
+                                    })
+                                }
+                            })
+                        }
+                    )
                     for (call in response.toolCalls) {
                         onStep(step, call.name, call.arguments)
                         val result = executeTool(call)
-                        // Assistant asked for tool -> tool answered
-                        messages.add(
+                        history.add(
                             buildJsonObject {
                                 put("role", "tool")
                                 put("tool_call_id", call.id)
@@ -80,7 +98,6 @@ object AgentClient {
                             }
                         )
                     }
-                    // Also record the assistant turn that requested the tools.
                     continue
                 }
 
@@ -118,16 +135,17 @@ object AgentClient {
         put("content", content)
     }
 
-    private fun chatOnce(context: Context, messages: JsonArray): ChatResponse {
+    private fun chatOnce(context: Context, history: List<JsonObject>): ChatResponse {
         val url = "${AgentConfig.baseUrl(context)}/chat/completions"
         val payload = buildJsonObject {
             put("model", AgentConfig.model(context))
-            put("messages", messages)
+            put("messages", buildJsonArray { history.forEach { add(it) } })
             put("stream", false)
             put("tool_choice", "auto")
         }.toString()
 
-        val conn = java.net.HttpURLConnection(java.net.URI(url).toURL())
+        // HttpURLConnection is abstract: openConnection() gives the real impl.
+        val conn = java.net.URI(url).toURL().openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
         val key = AgentConfig.apiKey(context)
