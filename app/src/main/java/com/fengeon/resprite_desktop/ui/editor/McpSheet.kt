@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +37,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fengeon.resprite_desktop.net.McpServer
+import com.fengeon.resprite_desktop.net.TunnelManager
 import com.fengeon.resprite_desktop.ui.rsColors
 
 /** Panel that starts/stops the tool API and shows how to call it. */
@@ -51,6 +54,7 @@ fun McpSheet(onDismiss: () -> Unit) {
     // stable token across restarts instead of reading a new one each time.
     var lanOn by remember { mutableStateOf(McpServer.lanEnabled(context)) }
     var shownToken by remember { mutableStateOf(McpServer.token) }
+    val tunnel by TunnelManager.state.collectAsState()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -168,6 +172,75 @@ fun McpSheet(onDismiss: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 12.dp)
                 )
+            }
+
+            // ---- public access through Cloudflare Tunnel -------------------
+            HorizontalDivider(color = C.divider, modifier = Modifier.padding(top = 16.dp))
+            Text(
+                "Public access (Cloudflare Tunnel)",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+            Text(
+                "Publishes the API over HTTPS at a *.trycloudflare.com URL so an AI client on any " +
+                    "network can reach it, without exposing this device on the LAN. Needs the " +
+                    "server above to be running.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+            )
+            val tunnelBusy = tunnel is TunnelManager.State.Running ||
+                tunnel === TunnelManager.State.Starting
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = {
+                        if (tunnelBusy) TunnelManager.stop(context)
+                        else TunnelManager.start(context, namedToken = null)
+                    },
+                    enabled = running || tunnelBusy
+                ) {
+                    Text(if (tunnelBusy) "  Stop tunnel" else "  Start tunnel")
+                }
+                Text(
+                    when (val s = tunnel) {
+                        TunnelManager.State.Stopped -> "stopped"
+                        TunnelManager.State.Starting -> "starting…"
+                        is TunnelManager.State.Running -> "public"
+                        is TunnelManager.State.Failed -> "failed"
+                    },
+                    color = if (tunnel is TunnelManager.State.Running) C.statusText
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+            }
+            when (val s = tunnel) {
+                is TunnelManager.State.Running -> {
+                    val publicEndpoint = s.url?.let { "$it/call" }
+                        ?: "(hostname is configured in your Cloudflare dashboard)"
+                    Text(
+                        "Public endpoint",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                    CopyRow(publicEndpoint) { clipboard.setText(AnnotatedString(publicEndpoint)) }
+                    Text(
+                        "Anyone with this URL plus the bearer token can draw on your canvas. " +
+                            "Stop the tunnel when you are done — the URL dies with it.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                is TunnelManager.State.Failed -> Text(
+                    s.message,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                else -> {}
             }
         }
     }

@@ -47,6 +47,17 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      # The tunnel feature execs the real cloudflared binary. It is ~36 MB, so it
+      # is fetched at build time rather than committed to the repo.
+      - name: Bundle cloudflared (arm64)
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          curl -sSL --retry 3 -o app/src/main/jniLibs/arm64-v8a/libcloudflared.so \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
+          chmod +x app/src/main/jniLibs/arm64-v8a/libcloudflared.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
+          head -c 4 app/src/main/jniLibs/arm64-v8a/libcloudflared.so | xxd | head -1
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 

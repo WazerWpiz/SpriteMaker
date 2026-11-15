@@ -72,6 +72,13 @@ android {
     }
 
     packaging {
+        // cloudflared (the Cloudflare Tunnel client) ships as a native lib so it
+        // can be executed straight from nativeLibraryDir. Android 10+ blocks
+        // executing files from the app's data dirs (W^X), and legacy packaging is
+        // what makes AGP extract native libs with the exec bit set.
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
