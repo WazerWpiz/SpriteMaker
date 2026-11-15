@@ -12,6 +12,10 @@ import com.fengeon.resprite_desktop.commands.CreateFrameCmd
 import com.fengeon.resprite_desktop.commands.CreateLayerCmd
 import com.fengeon.resprite_desktop.commands.DeleteLayerCmd
 import com.fengeon.resprite_desktop.commands.DuplicateLayerCmd
+import com.fengeon.resprite_desktop.commands.DeleteFrameCmd
+import com.fengeon.resprite_desktop.commands.DuplicateFrameCmd
+import com.fengeon.resprite_desktop.commands.SetFramePropertyCmd
+import com.fengeon.resprite_desktop.commands.SetFrameRateCmd
 import com.fengeon.resprite_desktop.commands.FillCmd
 import com.fengeon.resprite_desktop.commands.MoveLayerCmd
 import com.fengeon.resprite_desktop.commands.PaintStrokeCmd
@@ -68,7 +72,8 @@ object McpApi {
         "add_layer", "delete_layer", "duplicate_layer", "move_layer",
         "set_layer_visible", "set_layer_locked", "set_layer_opacity", "rename_layer",
         "select_layer", "select_frame",
-        "add_frame", "flip_h", "flip_v", "resize_canvas",
+        "add_frame", "duplicate_frame", "delete_frame", "set_frame_duration", "set_frame_rate", "get_frames",
+        "flip_h", "flip_v", "resize_canvas",
         "undo", "redo"
     )
 
@@ -119,6 +124,11 @@ object McpApi {
         // frames / canvas
         "select_frame" -> selectFrame(a)
         "add_frame" -> addFrame()
+        "duplicate_frame" -> duplicateFrame()
+        "delete_frame" -> deleteFrame()
+        "set_frame_duration" -> setFrameDuration(a)
+        "set_frame_rate" -> setFrameRate(a)
+        "get_frames" -> getFrames()
         "flip_h" -> flip(a, horizontal = true)
         "flip_v" -> flip(a, horizontal = false)
         "resize_canvas" -> resizeCanvas(a)
@@ -440,6 +450,63 @@ object McpApi {
         RespriteEngine.undo.execute(s, CreateFrameCmd(s.document.frameDatas.size, s.document.layerDatas.size, Size(s.canvasWidth, s.canvasHeight)))
         RespriteEngine.touch()
         okResult("frames", s.document.frameDatas.size.toString())
+    }
+
+    private fun duplicateFrame(): String = RespriteEngine.onMain {
+        val s = RespriteEngine.state
+        RespriteEngine.undo.execute(s, DuplicateFrameCmd(s.selectedFrameIndex))
+        RespriteEngine.touch()
+        okResult("frames", s.document.frameDatas.size.toString())
+    }
+
+    private fun deleteFrame(): String = RespriteEngine.onMain {
+        val s = RespriteEngine.state
+        if (s.document.frameDatas.size <= 1) return@onMain okResult("deleted", "false")
+        RespriteEngine.undo.execute(s, DeleteFrameCmd(s.selectedFrameIndex))
+        RespriteEngine.touch()
+        okResult("deleted", "true")
+    }
+
+    private fun setFrameDuration(a: JsonObject): String {
+        val d = a.intArg("duration")
+        require(d in 1..600) { "duration must be 1..600" }
+        return RespriteEngine.onMain {
+            val s = RespriteEngine.state
+            RespriteEngine.undo.execute(s, SetFramePropertyCmd(s.selectedFrameIndex) { it.copy(duration = d) })
+            RespriteEngine.touch()
+            okResult("duration", d.toString())
+        }
+    }
+
+    private fun setFrameRate(a: JsonObject): String {
+        val fps = a.intArg("fps")
+        return RespriteEngine.onMain {
+            val s = RespriteEngine.state
+            RespriteEngine.undo.execute(s, SetFrameRateCmd(fps))
+            RespriteEngine.touch()
+            okResult("frameRate", s.document.frameRate.toString())
+        }
+    }
+
+    private fun getFrames(): String = RespriteEngine.onMain {
+        val s = RespriteEngine.state
+        buildJsonObject {
+            put("ok", true)
+            put("result", buildJsonObject {
+                put("frameRate", s.document.frameRate)
+                put("selected", s.selectedFrameIndex)
+                put("frames", buildJsonArray {
+                    s.document.frameDatas.forEachIndexed { i, f ->
+                        add(buildJsonObject {
+                            put("index", i)
+                            put("duration", f.duration)
+                            put("clipName", f.clipName)
+                            put("clipDir", f.clipDir)
+                        })
+                    }
+                })
+            })
+        }.toString()
     }
 
     private fun flip(a: JsonObject, horizontal: Boolean): String = RespriteEngine.onMain {
