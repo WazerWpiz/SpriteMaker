@@ -65,7 +65,7 @@ object AgentClient {
                 step++
                 val response = chatOnce(context, messages)
                 if (!response.success) {
-                    onResult(Result(false, "API error: ${response.text}", step))
+                    onResult(Result(false, "API error: ${response.content ?: "unknown"}", step))
                     return@launch
                 }
 
@@ -195,7 +195,6 @@ object AgentClient {
         val gson = Gson()
         val url = "${AgentConfig.baseUrl(context)}/chat/completions"
         val model = AgentConfig.model(context)
-        val apiKey = AgentConfig.apiKey(context)
 
         val payload = JsonObject().apply {
             add("model", JsonPrimitive(model))
