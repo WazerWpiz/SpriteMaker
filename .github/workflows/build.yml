@@ -7,6 +7,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -57,6 +60,25 @@ jobs:
             app/build/outputs/logs/*
           if-no-files-found: warn
           retention-days: 14
+
+      # Also publish the APK as a release asset so it can be downloaded from a
+      # phone without a GitHub login. Rolling tag: each push replaces the asset
+      # on the 'latest-debug' release instead of piling up release history.
+      - name: Publish debug APK to release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          test -n "$APK" || { echo 'no APK built'; exit 1; }
+          cp "$APK" app-debug.apk
+          NOTES="Built from ${GITHUB_SHA::7}. Installs as com.fengeon.resprite_desktop.debug (separate from the original app). Local tool API on http://127.0.0.1:47613/call once started from the gear button."
+          if gh release view latest-debug >/dev/null 2>&1; then
+            gh release upload latest-debug app-debug.apk --clobber
+            gh release edit latest-debug --notes "$NOTES"
+          else
+            gh release create latest-debug app-debug.apk --title "Debug APK (latest)" --notes "$NOTES"
+          fi
 
       - name: Upload build reports on failure
         if: failure()
