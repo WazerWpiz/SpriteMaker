@@ -101,7 +101,20 @@ jobs:
           tail -3 "$LOG"
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace --no-daemon
+        run: |
+          set +e
+          gradle :app:assembleDebug --stacktrace --no-daemon > /tmp/gradle.log 2>&1
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            # Job logs need admin rights to read, so surface the Kotlin compiler
+            # errors as annotations, which the REST API does expose.
+            grep -E "^e: |error: |Unresolved reference|Compilation error|Caused by" /tmp/gradle.log \
+              | head -15 | tr '\n' '|' | cut -c1-900 | sed 's/^/::error::gradle: /'
+            tail -40 /tmp/gradle.log
+            exit "$RC"
+          fi
+          tail -5 /tmp/gradle.log
 
       - name: Upload APK artifact
         if: always()
