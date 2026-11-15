@@ -383,6 +383,29 @@ fun McpSheet(onDismiss: () -> Unit) {
                 }
             }
 
+            fun runAgent() {
+                agentRunning = true
+                agentSteps = 0
+                agentResult = "Thinking…"
+                AgentClient.run(
+                    context = context,
+                    userPrompt = agentPrompt,
+                    onStep = { step, tool, args ->
+                        agentSteps = step
+                        agentResult = "Step $step: ${tool ?: "thinking"} ${args.orEmpty()}"
+                    },
+                    onResult = { result ->
+                        agentRunning = false
+                        agentSteps = result.steps
+                        agentResult = if (result.success) {
+                            "Done in ${result.steps} step(s): ${result.text}"
+                        } else {
+                            "Error: ${result.text}"
+                        }
+                    }
+                )
+            }
+
             OutlinedTextField(
                 value = agentPrompt,
                 onValueChange = { agentPrompt = it },
@@ -420,23 +443,7 @@ fun McpSheet(onDismiss: () -> Unit) {
                 )
             }
 
-            fun runAgent() {
-                agentRunning = true
-                agentSteps = 0
-                agentResult = "Thinking…"
-                AgentClient.run(context, agentPrompt) { step, tool, args ->
-                    agentSteps = step
-                    agentResult = "Step $step: ${tool ?: "thinking"} ${args.orEmpty()}"
-                } onResult { result ->
-                    agentRunning = false
-                    agentSteps = result.steps
-                    agentResult = if (result.success) {
-                        "Done in ${result.steps} step(s): ${result.text}"
-                    } else {
-                        "Error: ${result.text}"
-                    }
-                }
-            }
+
         }
     }
 }
