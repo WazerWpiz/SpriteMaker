@@ -11,7 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -30,9 +29,9 @@ enum class Tool { Pencil, Eraser, Fill, Line, Rect, Ellipse, Select, Move, Eyedr
  * Single finger -> active tool. Two fingers -> transform. A second finger
  * arriving mid-stroke abandons the stroke so transforms never leave stray marks.
  *
- * Layout (scale + offset) is derived from measured container size, never written
- * during the draw pass. Gesture handlers read live values through
- * [rememberUpdatedState] so the pointer coroutine doesn't restart on zoom.
+ * The gesture lambda reads the mutable states (containerSize / userScale /
+ * userPan) directly and recomputes the layout math inline. This avoids
+ * rememberUpdatedState on derived values, which crashed the Kotlin IR backend.
  */
 @Composable
 fun CanvasView(
@@ -46,30 +45,6 @@ fun CanvasView(
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     var userScale by remember { mutableStateOf(1f) }
     var userPan by remember { mutableStateOf(Offset.Zero) }
-
-    val baseScale = remember(containerSize, composite) {
-        if (containerSize.width == 0 || containerSize.height == 0) 1f
-        else min(
-            containerSize.width.toFloat() / composite.width,
-            containerSize.height.toFloat() / composite.height
-        )
-    }
-    val baseX = (containerSize.width - composite.width * baseScale) / 2f
-    val baseY = (containerSize.height - composite.height * baseScale) / 2f
-    val effectiveScale = baseScale * userScale
-
-    val scaleState = rememberUpdatedState(effectiveScale)
-    val baseXState = rememberUpdatedState(baseX)
-    val baseYState = rememberUpdatedState(baseY)
-    val panState = rememberUpdatedState(userPan)
-
-    fun toPixel(pos: Offset): Pair<Int, Int> {
-        val s = scaleState.value
-        if (s <= 0f) return 0 to 0
-        val px = ((pos.x - baseXState.value - panState.value.x) / s).toInt()
-        val py = ((pos.y - baseYState.value - panState.value.y) / s).toInt()
-        return px.coerceIn(0, composite.width - 1) to py.coerceIn(0, composite.height - 1)
-    }
 
     Canvas(
         modifier = modifier
@@ -86,6 +61,21 @@ fun CanvasView(
                     var startY = -1
                     var lastX = -1
                     var lastY = -1
+
+                    fun toPixel(pos: Offset): Pair<Int, Int> {
+                        val cs = containerSize
+                        if (cs.width == 0 || cs.height == 0) return 0 to 0
+                        val baseScale = min(
+                            cs.width.toFloat() / composite.width,
+                            cs.height.toFloat() / composite.height
+                        ) * userScale
+                        if (baseScale <= 0f) return 0 to 0
+                        val baseX = (cs.width - composite.width * baseScale / userScale) / 2f
+                        val baseY = (cs.height - composite.height * baseScale / userScale) / 2f
+                        val px = ((pos.x - baseX - userPan.x) / baseScale).toInt()
+                        val py = ((pos.y - baseY - userPan.y) / baseScale).toInt()
+                        return px.coerceIn(0, composite.width - 1) to py.coerceIn(0, composite.height - 1)
+                    }
 
                     var event = awaitPointerEvent()
                     while (event.changes.any { it.pressed }) {
@@ -134,16 +124,25 @@ fun CanvasView(
                 }
             }
     ) {
-        drawImage(
-            image = composite.asImageBitmap(),
-            dstOffset = IntOffset(
-                (baseX + userPan.x).toInt(),
-                (baseY + userPan.y).toInt()
-            ),
-            dstSize = IntSize(
-                (composite.width * effectiveScale).toInt(),
-                (composite.height * effectiveScale).toInt()
+        val cs = containerSize
+        if (cs.width > 0 && cs.height > 0) {
+            val baseScale = min(
+                cs.width.toFloat() / composite.width,
+                cs.height.toFloat() / composite.height
             )
-        )
+            val effectiveScale = baseScale * userScale
+            val drawW = composite.width * effectiveScale
+            val drawH = composite.height * effectiveScale
+            val baseX = (cs.width - drawW) / 2f
+            val baseY = (cs.height - drawH) / 2f
+            drawImage(
+                image = composite.asImageBitmap(),
+                dstOffset = IntOffset(
+                    (baseX + userPan.x).toInt(),
+                    (baseY + userPan.y).toInt()
+                ),
+                dstSize = IntSize(drawW.toInt(), drawH.toInt())
+            )
+        }
     }
 }
