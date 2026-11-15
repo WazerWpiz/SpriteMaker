@@ -102,6 +102,9 @@ class TunnelService : Service() {
         runCatching { logFile.writeText("") }
         thread(name = "cloudflared-log", isDaemon = true) {
             var lastProblem: String? = null
+            // A quick tunnel prints its URL before the edge accepts the
+            // connection, so a later "registered" line must not wipe it out.
+            var publicUrl: String? = null
             runCatching {
                 p.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
@@ -109,13 +112,16 @@ class TunnelService : Service() {
                         val url = QUICK_URL.find(line)?.value
                         when {
                             url != null -> {
+                                publicUrl = url
                                 TunnelManager.onRunning(url)
                                 notify("Tunnel ready", url)
                             }
                             // Named tunnels print this once the edge accepts them.
                             line.contains("Registered tunnel connection") -> {
-                                TunnelManager.onRunning(null)
-                                notify("Tunnel connected", null)
+                                if (publicUrl == null) {
+                                    TunnelManager.onRunning(null)
+                                    notify("Tunnel connected", null)
+                                }
                             }
                             line.contains("ERR") || line.contains("failed") ->
                                 lastProblem = line
