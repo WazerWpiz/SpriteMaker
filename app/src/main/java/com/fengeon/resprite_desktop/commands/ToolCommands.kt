@@ -92,22 +92,28 @@ class ShapeCmd(
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
+        // A 1px stroke centred on an integer coordinate straddles the boundary
+        // between two pixel rows and lands at ~50% alpha on both. Offset stroked
+        // shapes by half a pixel so the stroke covers exactly one row at full
+        // opacity. Filled shapes keep integer bounds so they cover exactly the
+        // pixels the coordinates name.
+        val off = if (filled) 0f else 0.5f
+        val ax = x0 + off; val ay = y0 + off
+        val bx = x1 + off; val by = y1 + off
         when (shape) {
-            Shape.Line -> c.drawLine(
-                x0.toFloat(), y0.toFloat(), x1.toFloat(), y1.toFloat(), p
-            )
+            Shape.Line -> c.drawLine(ax, ay, bx, by, p)
             Shape.Rect -> {
-                val l = minOf(x0, x1).toFloat()
-                val t = minOf(y0, y1).toFloat()
-                val r = maxOf(x0, x1).toFloat()
-                val b = maxOf(y0, y1).toFloat()
+                val l = minOf(ax, bx)
+                val t = minOf(ay, by)
+                val r = maxOf(ax, bx)
+                val b = maxOf(ay, by)
                 c.drawRect(l, t, r, b, p)
             }
             Shape.Ellipse -> {
-                val l = minOf(x0, x1).toFloat()
-                val t = minOf(y0, y1).toFloat()
-                val r = maxOf(x0, x1).toFloat()
-                val b = maxOf(y0, y1).toFloat()
+                val l = minOf(ax, bx)
+                val t = minOf(ay, by)
+                val r = maxOf(ax, bx)
+                val b = maxOf(ay, by)
                 c.drawOval(RectF(l, t, r, b), p)
             }
         }
