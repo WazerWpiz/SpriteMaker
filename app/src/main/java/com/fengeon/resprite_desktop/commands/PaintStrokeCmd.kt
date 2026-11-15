@@ -8,45 +8,50 @@ import android.graphics.PorterDuffXfermode
 
 /**
  * One pencil/eraser stroke against a cell bitmap. The whole drag is a single
- * Command, so undo removes the entire stroke in one step instead of one segment.
+ * Command, so undo removes the entire stroke in one step.
  *
- * A snapshot of the cell is captured before the first pixel so undo restores the
- * exact pre-stroke image. extend() draws ONLY the new segment instead of clearing
- * and replaying the whole point history, which kept per-move cost linear (a long
- * drag used to be O(k^2) with a full-canvas clear per move).
- *
- * Memory note: the snapshot is a full-canvas copy held for as long as the command
- * sits on the undo stack. revert() drops it and redo rebuilds it, so only the undo
- * side pays. On large canvases with a deep undo history this is the next thing to
- * shrink (dirty-rect snapshot); tracked as a known limitation.
+ * Lifecycle:
+ *  - apply(): first execute (blank/current cell) or redo (cell already restored
+ *    to its pre-stroke pixels by revert()). Captures the snapshot if missing, then
+ *    draws the whole stroke. It never clears the cell: other marks must survive.
+ *  - extend(): during the drag, draws only the new segment. This keeps a long
+ *    stroke linear instead of O(k^2) with a full-canvas clear per move.
+ *  - revert(): restores the snapshot and releases it, so commands parked on the
+ *    redo stack do not pin one full-canvas bitmap each.
  */
 class PaintStrokeCmd(
     private val cellId: String,
     initialPoints: List<Pair<Int, Int>>,
-    private val color: Int,
+    color: Int,
     private val eraser: Boolean = false,
     private val brushSize: Int = 1
 ) : Command, NoOpAware {
     override val label: String = if (eraser) "Eraser" else "Paint"
+
+    // Held in a differently-named field so `color = ...` inside Paint().apply {}
+    // cannot be confused with the constructor parameter.
+    private val ink: Int = color
     private var snapshot: Bitmap? = null
     private val points: MutableList<Pair<Int, Int>> = initialPoints.toMutableList()
 
-    /** True once a real bitmap was found and painted; false for a no-op command. */
-    var effective: Boolean = false
+    override var effective: Boolean = false
         private set
 
     override fun apply(state: EditorState) {
-        paint(state, rebuild = true)
-        effective = snapshot != null
+        effective = false
+        val target = state.cellBitmaps[cellId] ?: return
+        ensureSnapshot(target)
+        replayStroke(target)
+        effective = true
     }
 
     /** Add one more point to an in-progress stroke without a new undo entry. */
     fun extend(state: EditorState, x: Int, y: Int) {
         val target = state.cellBitmaps[cellId] ?: return
         ensureSnapshot(target)
-        val canvas = Canvas(target)
         val prev = points.lastOrNull()
         points.add(x to y)
+        val canvas = Canvas(target)
         if (prev == null) dab(canvas, x, y) else segment(canvas, prev.first, prev.second, x, y)
         effective = true
     }
@@ -54,23 +59,17 @@ class PaintStrokeCmd(
     private fun ensureSnapshot(target: Bitmap): Bitmap =
         snapshot ?: target.copy(Bitmap.Config.ARGB_8888, false).also { snapshot = it }
 
-    private fun paint(state: EditorState, rebuild: Boolean) {
-        val target = state.cellBitmaps[cellId] ?: return
-        val snap = ensureSnapshot(target)
+    private fun replayStroke(target: Bitmap) {
+        if (points.isEmpty()) return
         val canvas = Canvas(target)
-        if (rebuild) {
-            // Redo path: restore the pre-stroke image, then replay the whole stroke.
-            canvas.drawColor(0, PorterDuff.Mode.CLEAR)
-            canvas.drawBitmap(snap, 0f, 0f, null)
-            when {
-                points.isEmpty() -> {}
-                points.size == 1 -> dab(canvas, points[0].first, points[0].second)
-                else -> for (i in 0 until points.size - 1) {
-                    val (x0, y0) = points[i]
-                    val (x1, y1) = points[i + 1]
-                    segment(canvas, x0, y0, x1, y1)
-                }
-            }
+        if (points.size == 1) {
+            dab(canvas, points[0].first, points[0].second)
+            return
+        }
+        for (i in 0 until points.size - 1) {
+            val (x0, y0) = points[i]
+            val (x1, y1) = points[i + 1]
+            segment(canvas, x0, y0, x1, y1)
         }
     }
 
@@ -81,7 +80,7 @@ class PaintStrokeCmd(
         val b = brushSize.coerceAtLeast(1)
         val fill = Paint().apply {
             style = Paint.Style.FILL
-            color = this@PaintStrokeCmd.color
+            color = ink
             if (eraser) xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         }
         canvas.drawRect(x.toFloat(), y.toFloat(), (x + b).toFloat(), (y + b).toFloat(), fill)
@@ -89,7 +88,7 @@ class PaintStrokeCmd(
 
     private fun segment(canvas: Canvas, x0: Int, y0: Int, x1: Int, y1: Int) {
         val stroke = Paint().apply {
-            color = this@PaintStrokeCmd.color
+            color = ink
             style = Paint.Style.STROKE
             strokeWidth = brushSize.toFloat()
             strokeCap = Paint.Cap.ROUND
@@ -103,8 +102,6 @@ class PaintStrokeCmd(
     override fun revert(state: EditorState) {
         val snap = snapshot ?: return
         state.cellBitmaps[cellId] = snap.copy(Bitmap.Config.ARGB_8888, true)
-        // Release the full-canvas copy while this command sits on the redo stack;
-        // a later redo rebuilds it from the restored image.
         snapshot = null
     }
 }
