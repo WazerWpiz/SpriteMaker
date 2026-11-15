@@ -85,7 +85,7 @@ class ShapeCmd(
         val target = state.cellBitmaps[cellId] ?: return
         if (snapshot == null) snapshot = target.copy(Bitmap.Config.ARGB_8888, false)
         val c = Canvas(target)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val p = Paint().apply {
             this.color = color
             this.strokeWidth = strokeWidth.toFloat()
             style = if (filled) Paint.Style.FILL else Paint.Style.STROKE

@@ -16,6 +16,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import com.fengeon.resprite_desktop.ui.rsColors
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
@@ -159,7 +160,8 @@ fun CanvasView(
             drawImage(
                 image = composite.asImageBitmap(),
                 dstOffset = IntOffset(finalX.toInt(), finalY.toInt()),
-                dstSize = IntSize(drawW.toInt(), drawH.toInt())
+                dstSize = IntSize(drawW.toInt(), drawH.toInt()),
+                filterQuality = FilterQuality.None
             )
         }
     }

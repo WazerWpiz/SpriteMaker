@@ -24,7 +24,7 @@ class PaintStrokeCmd(
         val target = state.cellBitmaps[cellId] ?: return
         if (snapshot == null) snapshot = target.copy(Bitmap.Config.ARGB_8888, false)
         val canvas = Canvas(target)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val paint = Paint().apply {
             this.color = color
             style = Paint.Style.STROKE
             strokeWidth = brushSize.toFloat()
@@ -42,7 +42,11 @@ class PaintStrokeCmd(
                 val r = (brushSize / 2f).coerceAtLeast(0.5f)
                 canvas.drawCircle(x.toFloat(), y.toFloat(), r, er)
             } else {
-                canvas.drawCircle(x.toFloat(), y.toFloat(), brushSize / 2f, paint.apply { style = Paint.Style.FILL })
+                val b = brushSize.coerceAtLeast(1)
+                canvas.drawRect(
+                    x.toFloat(), y.toFloat(), (x + b).toFloat(), (y + b).toFloat(),
+                    paint.apply { style = Paint.Style.FILL }
+                )
             }
         } else {
             for (i in 0 until points.size - 1) {
