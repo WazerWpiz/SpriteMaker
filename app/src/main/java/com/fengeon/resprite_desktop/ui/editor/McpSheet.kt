@@ -12,12 +12,17 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PasswordVisualTransformation
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,8 +39,13 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardActions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fengeon.resprite_desktop.net.AgentClient
+import com.fengeon.resprite_desktop.net.AgentConfig
 import com.fengeon.resprite_desktop.net.McpServer
 import com.fengeon.resprite_desktop.net.TunnelManager
 import com.fengeon.resprite_desktop.ui.rsColors
@@ -241,6 +251,191 @@ fun McpSheet(onDismiss: () -> Unit) {
                     modifier = Modifier.padding(top = 6.dp)
                 )
                 else -> {}
+            }
+
+            // ---- AI Agent (runs locally on this device) -----------------------
+            HorizontalDivider(color = C.divider, modifier = Modifier.padding(top = 16.dp))
+            Text(
+                "AI Agent",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+            Text(
+                "An agent that runs on this device, calls the local tool API, and draws for you. " +
+                    "Configure a provider, enter your API key, then send a prompt.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+            )
+
+            val agentConfig = AgentConfig
+            var agentProvider by remember { mutableStateOf(agentConfig.provider) }
+            var agentApiKey by remember { mutableStateOf(agentConfig.apiKey(context)) }
+            var agentModel by remember { mutableStateOf(agentConfig.model(context)) }
+            var agentBaseUrl by remember { mutableStateOf(agentConfig.baseUrl(context)) }
+            var agentMaxSteps by remember { mutableStateOf(agentConfig.maxSteps(context)) }
+            var agentPrompt by remember { mutableStateOf("") }
+            var agentResult by remember { mutableStateOf<String?>(null) }
+            var agentRunning by remember { mutableStateOf(false) }
+            var agentSteps by remember { mutableStateOf(0) }
+
+            val providerItems = listOf(
+                AgentConfig.Provider.OPENROUTER,
+                AgentConfig.Provider.NVIDIA,
+                AgentConfig.Provider.CUSTOM
+            )
+
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                Text("Provider", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
+                androidx.compose.material3.DropdownMenu(
+                    expanded = true,
+                    onDismissRequest = {},
+                    modifier = Modifier.weight(1f)
+                ) {
+                    providerItems.forEach { p ->
+                        androidx.compose.material3.DropdownMenuItem(onClick = {
+                            agentProvider = p.id
+                            if (p.id != AgentConfig.PROVIDER_CUSTOM) {
+                                agentModel = p.defaultModel
+                                agentBaseUrl = agentConfig.baseUrl(context, p.id)
+                            }
+                        }) {
+                            Text(p.label, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = agentApiKey,
+                onValueChange = { agentApiKey = it },
+                label = { Text("API Key", fontSize = 11.sp) },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                visualTransformation = androidx.compose.material3.PasswordVisualTransformation()
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Text("Model", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
+                OutlinedTextField(
+                    value = agentModel,
+                    onValueChange = { agentModel = it },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (agentProvider == AgentConfig.PROVIDER_CUSTOM) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) {
+                    Text("Base URL", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
+                    OutlinedTextField(
+                        value = agentBaseUrl,
+                        onValueChange = { agentBaseUrl = it },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Text("Max steps", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
+                androidx.compose.material3.Slider(
+                    value = agentMaxSteps.toFloat(),
+                    onValueChange = { agentMaxSteps = it.roundToInt() },
+                    valueRange = 1f..60f,
+                    steps = 59,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(agentMaxSteps.toString(), fontSize = 11.sp, modifier = Modifier.width(32.dp))
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        agentConfig.save(
+                            context,
+                            agentProvider,
+                            agentApiKey,
+                            agentModel,
+                            agentBaseUrl,
+                            agentMaxSteps
+                        )
+                        agentResult = "Saved."
+                    },
+                    enabled = agentApiKey.isNotBlank() || agentProvider == AgentConfig.PROVIDER_CUSTOM
+                ) {
+                    Text("Save config")
+                }
+                if (agentConfig.isConfigured(context)) {
+                    Text("Configured", fontSize = 11.sp, color = C.statusText, modifier = Modifier.padding(start = 12.dp))
+                } else {
+                    Text("Missing API key / URL", fontSize = 11.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 12.dp))
+                }
+            }
+
+            OutlinedTextField(
+                value = agentPrompt,
+                onValueChange = { agentPrompt = it },
+                label = { Text("Prompt", fontSize = 11.sp) },
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                minLines = 3,
+                keyboardActions = androidx.compose.ui.text.input.KeyboardActions(onDone = {
+                    if (!agentRunning && agentConfig.isConfigured(context) && agentPrompt.isNotBlank()) {
+                        runAgent()
+                    }
+                })
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Button(
+                    onClick = { if (!agentRunning) runAgent() },
+                    enabled = !agentRunning && agentConfig.isConfigured(context) && agentPrompt.isNotBlank()
+                ) {
+                    Text(if (agentRunning) "Running…" else "Run Agent")
+                }
+                if (agentRunning) {
+                    Text("Step $agentSteps", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp))
+                }
+            }
+
+            if (agentResult != null) {
+                Text(
+                    agentResult!!,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth()
+                )
+            }
+
+            fun runAgent() {
+                agentRunning = true
+                agentSteps = 0
+                agentResult = "Thinking…"
+                AgentClient.run(context, agentPrompt) { step, tool, args ->
+                    agentSteps = step
+                    agentResult = "Step $step: ${tool ?: "thinking"} ${args.orEmpty()}"
+                } onResult { result ->
+                    agentRunning = false
+                    agentSteps = result.steps
+                    agentResult = if (result.success) {
+                        "Done in ${result.steps} step(s): ${result.text}"
+                    } else {
+                        "Error: ${result.text}"
+                    }
+                }
             }
         }
     }
