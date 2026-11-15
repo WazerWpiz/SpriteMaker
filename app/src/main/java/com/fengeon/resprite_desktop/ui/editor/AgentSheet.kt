@@ -179,7 +179,7 @@ fun AgentSheet(onDismiss: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                 ) {
-                    androidx.compose.foundation.lazy.itemsIndexed(history) { _, item ->
+                    itemsIndexed(history) { _, item ->
                         val short = if (item.length > 28) item.take(28) + "…" else item
                         Box(
                             modifier = Modifier
