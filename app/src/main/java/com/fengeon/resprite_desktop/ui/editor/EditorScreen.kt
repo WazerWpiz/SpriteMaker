@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +26,8 @@ import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
@@ -52,7 +55,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +71,7 @@ import androidx.compose.ui.unit.sp
 import com.fengeon.resprite_desktop.ui.rsColors
 import com.fengeon.resprite_desktop.commands.CreateFrameCmd
 import com.fengeon.resprite_desktop.commands.CreateLayerCmd
+import com.fengeon.resprite_desktop.commands.DeleteFrameCmd
 import com.fengeon.resprite_desktop.commands.DeleteLayerCmd
 import com.fengeon.resprite_desktop.commands.Eyedropper
 import com.fengeon.resprite_desktop.commands.FillCmd
@@ -131,9 +137,25 @@ fun EditorScreen() {
     var layersOpen by remember { mutableStateOf(false) }
     var mcpOpen by remember { mutableStateOf(false) }
     var zoomPct by remember { mutableStateOf(100) }
+    var playing by remember { mutableStateOf(false) }
     val activeStroke = remember { mutableStateOf<PaintStrokeCmd?>(null) }
 
     fun bump() { RespriteEngine.touch() }
+
+    // Playback: advances the selected frame at the document's frame rate. Reading
+    // state.document.frameRate each tick means a rate change takes effect without
+    // restarting playback.
+    LaunchedEffect(playing) {
+        if (!playing) return@LaunchedEffect
+        while (true) {
+            val fps = state.document.frameRate.coerceIn(1, 60)
+            delay((1000L / fps).coerceAtLeast(16L))
+            val count = state.document.frameDatas.size
+            if (count <= 1) { playing = false; break }
+            state.selectedFrameIndex = (state.selectedFrameIndex + 1) % count
+            bump()
+        }
+    }
     fun activeCellId(): String = state.ensureCell(state.selectedLayerIndex, state.selectedFrameIndex)
 
     val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -313,8 +335,21 @@ fun EditorScreen() {
                     .padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
-                    state.document.frameDatas.forEachIndexed { i, _ ->
+                IconButton(onClick = { playing = !playing }, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        "Play",
+                        tint = if (playing) C.statusText else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                // LazyRow, not Row: an action set can have hundreds of frames and a
+                // plain Row would overflow off-screen with no way to reach them.
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    itemsIndexed(state.document.frameDatas) { i, _ ->
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
@@ -322,16 +357,21 @@ fun EditorScreen() {
                                     if (i == state.selectedFrameIndex) C.frameSelectedBg else C.frameIdle,
                                     RoundedCornerShape(4.dp)
                                 )
-                                .clickable { state.selectedFrameIndex = i; bump() },
+                                .clickable { state.selectedFrameIndex = i; playing = false; bump() },
                             contentAlignment = Alignment.Center
                         ) {
                             Text("$i", color = if (i == state.selectedFrameIndex) C.toolIconActive else MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
                         }
                     }
-                    IconButton(onClick = {
-                        undo.execute(state, CreateFrameCmd(state.document.frameDatas.size, state.document.layerDatas.size, Size(state.canvasWidth, state.canvasHeight))); bump()
-                    }, modifier = Modifier.size(36.dp)) { Icon(Icons.Filled.Add, "Add frame", tint = MaterialTheme.colorScheme.onSurface) }
                 }
+                IconButton(onClick = {
+                    undo.execute(state, CreateFrameCmd(state.document.frameDatas.size, state.document.layerDatas.size, Size(state.canvasWidth, state.canvasHeight))); bump()
+                }, modifier = Modifier.size(36.dp)) { Icon(Icons.Filled.Add, "Add frame", tint = MaterialTheme.colorScheme.onSurface) }
+                IconButton(onClick = {
+                    if (state.document.frameDatas.size > 1) {
+                        undo.execute(state, DeleteFrameCmd(state.selectedFrameIndex)); bump()
+                    }
+                }, modifier = Modifier.size(36.dp)) { Icon(Icons.Filled.Delete, "Delete frame", tint = MaterialTheme.colorScheme.onSurface) }
                 IconButton(onClick = { layersOpen = true }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Filled.Layers, "Layers", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                 }

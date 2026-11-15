@@ -25,6 +25,7 @@ import com.fengeon.resprite_desktop.commands.ShapeCmd
 import com.fengeon.resprite_desktop.commands.SpriteFlipCmd
 import com.fengeon.resprite_desktop.commands.SpriteResizeCmd
 import com.fengeon.resprite_desktop.engine.Compositor
+import com.fengeon.resprite_desktop.format.GifEncoder
 import com.fengeon.resprite_desktop.engine.RespriteEngine
 import com.fengeon.resprite_desktop.model.Size
 import kotlinx.serialization.json.Json
@@ -74,7 +75,7 @@ object McpApi {
         "select_layer", "select_frame",
         "add_frame", "duplicate_frame", "delete_frame", "set_frame_duration", "set_frame_rate", "get_frames",
         "flip_h", "flip_v", "resize_canvas",
-        "undo", "redo"
+        "undo", "redo", "export_gif", "export_sheet"
     )
 
     private fun dispatch(tool: String, a: JsonObject): String = when (tool) {
@@ -136,6 +137,8 @@ object McpApi {
 
         // history
         "undo" -> undo()
+        "export_gif" -> exportGif(a)
+        "export_sheet" -> exportSheet(a)
         "redo" -> redo()
         else -> error("unknown tool '$tool' (call 'help' for the list)")
     }
@@ -563,6 +566,88 @@ object McpApi {
         RespriteEngine.undo.redo(s)
         RespriteEngine.touch()
         okResult("redone", "true")
+    }
+
+    /**
+     * Renders every frame, then writes a looping GIF into the app's external
+     * files dir where adb and other tools can read it without extra permissions.
+     */
+    private fun exportGif(a: JsonObject): String {
+        val name = (a["name"]?.jsonPrimitive?.content ?: "animation").replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return RespriteEngine.onMain {
+            val s = RespriteEngine.state
+            val w = s.canvasWidth
+            val h = s.canvasHeight
+            val fps = (a["fps"]?.jsonPrimitive?.int ?: s.document.frameRate).coerceIn(1, 60)
+            val frames = ArrayList<IntArray>(s.document.frameDatas.size)
+            val delays = ArrayList<Int>(s.document.frameDatas.size)
+            for (i in s.document.frameDatas.indices) {
+                val bmp = Compositor.flatten(s, i)
+                val px = IntArray(w * h)
+                bmp.getPixels(px, 0, w, 0, 0, w, h)
+                bmp.recycle()
+                frames.add(px)
+                // FrameData.duration is a frame multiplier; convert to centiseconds.
+                val mult = s.document.frameDatas[i].duration.coerceAtLeast(1)
+                delays.add(((100 * mult) / fps).coerceAtLeast(2))
+            }
+            val gif = GifEncoder.encode(w, h, frames, delays)
+            val dir = exportDir()
+            dir.mkdirs()
+            val file = java.io.File(dir, "$name.gif")
+            file.writeBytes(gif)
+            buildJsonObject {
+                put("ok", true)
+                put("result", buildJsonObject {
+                    put("path", file.absolutePath)
+                    put("bytes", gif.size)
+                    put("frames", frames.size)
+                    put("fps", fps)
+                })
+            }.toString()
+        }
+    }
+
+    /**
+     * Lays every frame out in a horizontal strip. Easier to inspect than a GIF and
+     * what most engines want for sprite-sheet animation.
+     */
+    private fun exportSheet(a: JsonObject): String {
+        val name = (a["name"]?.jsonPrimitive?.content ?: "sheet").replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return RespriteEngine.onMain {
+            val s = RespriteEngine.state
+            val w = s.canvasWidth
+            val h = s.canvasHeight
+            val count = s.document.frameDatas.size
+            val sheet = Bitmap.createBitmap(w * count, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(sheet)
+            for (i in 0 until count) {
+                val frame = Compositor.flatten(s, i)
+                canvas.drawBitmap(frame, (i * w).toFloat(), 0f, null)
+                frame.recycle()
+            }
+            val dir = exportDir()
+            dir.mkdirs()
+            val file = java.io.File(dir, "$name.png")
+            file.outputStream().use { sheet.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            sheet.recycle()
+            buildJsonObject {
+                put("ok", true)
+                put("result", buildJsonObject {
+                    put("path", file.absolutePath)
+                    put("frames", count)
+                    put("width", w * count)
+                    put("height", h)
+                })
+            }.toString()
+        }
+    }
+
+    /** App-specific external dir: readable by adb and other apps, no permission. */
+    private fun exportDir(): java.io.File {
+        val ctx = com.fengeon.resprite_desktop.RespriteApp.instance
+        val base = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+        return java.io.File(base, "exports")
     }
 
     // ---- helpers ---------------------------------------------------------
