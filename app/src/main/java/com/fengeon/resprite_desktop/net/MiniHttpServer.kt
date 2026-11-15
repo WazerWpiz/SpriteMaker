@@ -29,9 +29,15 @@ class MiniHttpServer(
 
     val isRunning: Boolean get() = running.get()
 
-    fun start() {
+    /**
+     * @param bindHost interface to listen on. "127.0.0.1" (the default) keeps the
+     *   API device-local. Anything wider must come from an explicit opt-in (see
+     *   [com.fengeon.resprite_desktop.net.McpServer] LAN mode): there is no TLS,
+     *   so binding a public interface would leak the bearer token in cleartext.
+     */
+    fun start(bindHost: String = "127.0.0.1") {
         if (!running.compareAndSet(false, true)) return
-        val server = ServerSocket(port, 8, InetAddress.getByName("127.0.0.1"))
+        val server = ServerSocket(port, 8, InetAddress.getByName(bindHost))
         socket = server
         thread(name = "resprite-http", isDaemon = true) {
             while (running.get()) {
