@@ -312,7 +312,7 @@ fun McpSheet(onDismiss: () -> Unit) {
                 onValueChange = { agentApiKey = it },
                 label = { Text("API Key", fontSize = 11.sp) },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                visualTransformation = androidx.compose.material3.PasswordVisualTransformation()
+                visualTransformation = PasswordVisualTransformation()
             )
 
             Row(
