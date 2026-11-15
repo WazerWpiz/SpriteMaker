@@ -70,7 +70,10 @@ class ShapeCmd(
     private val shape: Shape,
     private val x0: Int, private val y0: Int,
     private val x1: Int, private val y1: Int,
-    private val color: Int,
+    // Named 'ink', not 'color': inside Paint().apply {} the bare name 'color'
+    // resolves to Paint.color itself, so `this.color = color` was a self-assign
+    // that left every shape at Paint's default black.
+    private val ink: Int,
     private val strokeWidth: Int = 1,
     private val filled: Boolean = false
 ) : Command {
@@ -86,7 +89,7 @@ class ShapeCmd(
         if (snapshot == null) snapshot = target.copy(Bitmap.Config.ARGB_8888, false)
         val c = Canvas(target)
         val p = Paint().apply {
-            this.color = color
+            this.color = ink
             this.strokeWidth = strokeWidth.toFloat()
             style = if (filled) Paint.Style.FILL else Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
