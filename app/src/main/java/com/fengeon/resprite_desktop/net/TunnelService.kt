@@ -35,6 +35,10 @@ class TunnelService : Service() {
 
     private var process: Process? = null
 
+    /** Kept inside the app's own storage so a failure can be inspected from the
+     *  UI without touching the system (no shell, no /sdcard). */
+    private val logFile: File by lazy { File(filesDir, "tunnel.log") }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -95,10 +99,13 @@ class TunnelService : Service() {
             return
         }
         process = p
+        runCatching { logFile.writeText("") }
         thread(name = "cloudflared-log", isDaemon = true) {
+            var lastProblem: String? = null
             runCatching {
                 p.inputStream.bufferedReader().useLines { lines ->
                     for (line in lines) {
+                        runCatching { logFile.appendText(line + "\n") }
                         val url = QUICK_URL.find(line)?.value
                         when {
                             url != null -> {
@@ -110,6 +117,8 @@ class TunnelService : Service() {
                                 TunnelManager.onRunning(null)
                                 notify("Tunnel connected", null)
                             }
+                            line.contains("ERR") || line.contains("failed") ->
+                                lastProblem = line
                         }
                     }
                 }
@@ -118,7 +127,12 @@ class TunnelService : Service() {
             // Only report a failure if this process died on its own. A user stop
             // clears `process` first, so a clean shutdown must stay "stopped"
             // instead of showing a bogus exit-code error.
-            if (process === p) fail("cloudflared stopped (exit code $code)")
+            if (process === p) {
+                fail(
+                    lastProblem?.takeLast(260)
+                        ?: "cloudflared stopped (exit code $code)"
+                )
+            }
         }
     }
 

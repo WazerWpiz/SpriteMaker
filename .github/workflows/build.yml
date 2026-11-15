@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -47,16 +47,58 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      # The tunnel feature execs the real cloudflared binary. It is ~36 MB, so it
-      # is fetched at build time rather than committed to the repo.
-      - name: Bundle cloudflared (arm64)
+      # cloudflared is built from source with cgo instead of downloading the
+      # official static binary. Reason: Android has no /etc/resolv.conf, so Go's
+      # pure resolver falls back to 127.0.0.1:53, which is unroutable and
+      # unprivileged apps cannot bind anyway ("lookup api.trycloudflare.com on
+      # [::1]:53: connection refused"). Go's own net/conf.go says
+      # "case android: return true" — "DNS requests don't work on Android, so
+      # prefer the cgo resolver" — so a cgo build goes through bionic
+      # getaddrinfo/netd exactly like the app does.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Build cloudflared for Android arm64 (cgo)
         run: |
-          mkdir -p app/src/main/jniLibs/arm64-v8a
-          curl -sSL --retry 3 -o app/src/main/jniLibs/arm64-v8a/libcloudflared.so \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64
-          chmod +x app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-          ls -la app/src/main/jniLibs/arm64-v8a/
-          head -c 4 app/src/main/jniLibs/arm64-v8a/libcloudflared.so | xxd | head -1
+          set -euo pipefail
+          LOG=/tmp/cf-build.log
+          build() {
+            NDK="${ANDROID_NDK_LATEST_HOME:-}"
+            if [ -z "${NDK}" ] || [ ! -d "${NDK}" ]; then
+              NDK="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+            fi
+            if [ -z "${NDK}" ] || [ ! -d "${NDK}" ]; then
+              SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | head -1)
+              yes | "$SDKMANAGER" --install "ndk;27.2.12479018" > /dev/null 2>&1 || true
+              NDK="$ANDROID_HOME/ndk/27.2.12479018"
+            fi
+            echo "NDK: $NDK"
+            CC_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            ls -la "$CC_BIN"
+
+            git clone --depth 1 --branch 2026.11.0 \
+              https://github.com/cloudflare/cloudflared.git /tmp/cloudflared-src
+            cd /tmp/cloudflared-src
+            go version
+            mkdir -p "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
+            CGO_ENABLED=1 GOOS=android GOARCH=arm64 GOTOOLCHAIN=auto CC="$CC_BIN" \
+              go build -trimpath -buildmode=pie -ldflags="-s -w" \
+              -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libcloudflared.so" \
+              ./cmd/cloudflared
+            file "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libcloudflared.so"
+            ls -la "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/"
+          }
+          if ! build > "$LOG" 2>&1; then
+            # Job logs are not readable without admin rights, so surface the tail
+            # of the compiler output as an annotation, which the API does expose.
+            tail -25 "$LOG" | tr '\n' '|' | cut -c1-900 | sed 's/^/::error::cloudflared build failed: /'
+            tail -60 "$LOG"
+            exit 1
+          fi
+          tail -3 "$LOG"
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
