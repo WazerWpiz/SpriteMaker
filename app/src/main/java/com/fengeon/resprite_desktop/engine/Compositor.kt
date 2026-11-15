@@ -19,7 +19,11 @@ object Compositor {
             if (!layer.contentVisible) continue
             val cell = layer.cells.getOrNull(frameIndex) ?: continue
             val bmp = state.cellBitmaps[cell.id] ?: continue
-            paint.alpha = (cell.opacity.coerceIn(0f, 1f) * 255f).toInt()
+            // Layer opacity and cell opacity both contribute: a layer at 50% with a
+            // fully opaque cell must render at 50%. Reading only cell.opacity made
+            // set_layer_opacity() a no-op that still reported success.
+            val effective = (layer.opacity * cell.opacity).coerceIn(0f, 1f)
+            paint.alpha = (effective * 255f).toInt()
             canvas.drawBitmap(bmp, cell.bounds.origin.x.toFloat(), cell.bounds.origin.y.toFloat(), paint)
         }
         return out
