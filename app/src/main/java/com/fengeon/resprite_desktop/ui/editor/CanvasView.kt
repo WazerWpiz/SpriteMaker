@@ -68,7 +68,10 @@ fun CanvasView(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { containerSize.value = it }
-            .pointerInput(composite, tool) {
+            // Key on the canvas DIMENSIONS, not the composite Bitmap object. The
+            // gesture block only reads width/height, and every stroke move builds a
+            // new composite, so keying on it restarted the gesture mid-drag.
+            .pointerInput(tool, composite.width, composite.height) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position

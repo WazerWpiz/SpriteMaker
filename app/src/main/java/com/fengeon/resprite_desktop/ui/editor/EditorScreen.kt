@@ -118,8 +118,14 @@ fun EditorScreen() {
     val state = RespriteEngine.state
     val undo = RespriteEngine.undo
     var tool by remember { mutableStateOf(Tool.Pencil) }
-    var primary by remember { mutableStateOf(0xFF000000L.toInt()) }
-    var secondary by remember { mutableStateOf(0xFFFFFFFFL.toInt()) }
+    // Colours live on the shared state so the HTTP API and the palette never
+    // disagree about the active colour. Reading `revision` above means an API
+    // set_color() recomposes this screen too.
+    // Snapshot values for rendering (the palette swatches). Drawing handlers read
+    // state.primaryColor at call time instead, so a colour change is never missed
+    // by a lambda captured on an earlier composition.
+    val primary = state.primaryColor
+    val secondary = state.secondaryColor
     var palette by remember { mutableStateOf(Palette.COMMODORE_64) }
     var statusText by remember { mutableStateOf("ready") }
     var layersOpen by remember { mutableStateOf(false) }
@@ -244,9 +250,9 @@ fun EditorScreen() {
                 palette = palette,
                 primary = primary,
                 secondary = secondary,
-                onPrimaryChange = { primary = it },
-                onSecondaryChange = { secondary = it },
-                onPaletteChange = { palette = it; primary = it.colors.firstOrNull() ?: primary }
+                onPrimaryChange = { state.primaryColor = it; bump() },
+                onSecondaryChange = { state.secondaryColor = it; bump() },
+                onPaletteChange = { palette = it; state.primaryColor = it.colors.firstOrNull() ?: primary; bump() }
             )
 
             Column(modifier = Modifier.fillMaxWidth().weight(1f).padding(4.dp)) {
@@ -258,13 +264,13 @@ fun EditorScreen() {
                             when (tool) {
                                 Tool.Pencil, Tool.Eraser -> {
                                     val cmd = PaintStrokeCmd(activeCellId(), listOf(x to y),
-                                        if (tool == Tool.Eraser) 0 else primary, tool == Tool.Eraser, 1)
+                                        if (tool == Tool.Eraser) 0 else state.primaryColor, tool == Tool.Eraser, 1)
                                     undo.execute(state, cmd)
                                     activeStroke.value = cmd
                                     bump()
                                 }
-                                Tool.Fill -> { undo.execute(state, FillCmd(activeCellId(), x, y, primary)); bump() }
-                                Tool.Eyedropper -> { primary = Eyedropper.sample(state, x, y); bump() }
+                                Tool.Fill -> { undo.execute(state, FillCmd(activeCellId(), x, y, state.primaryColor)); bump() }
+                                Tool.Eyedropper -> { state.primaryColor = Eyedropper.sample(state, x, y); bump() }
                                 else -> {}
                             }
                         },
@@ -286,7 +292,7 @@ fun EditorScreen() {
                                     Tool.Line -> Shape.Line; Tool.Rect -> Shape.Rect; Tool.Ellipse -> Shape.Ellipse; else -> null
                                 }
                                 if (shape != null) {
-                                    undo.execute(state, ShapeCmd(activeCellId(), shape, sx, sy, ex, ey, primary, 1, false)); bump()
+                                    undo.execute(state, ShapeCmd(activeCellId(), shape, sx, sy, ex, ey, state.primaryColor, 1, false)); bump()
                                 }
                             }
                         },

@@ -98,6 +98,7 @@ object McpApi {
         val color = a.intArg("color")
         return RespriteEngine.onMain {
             RespriteEngine.state.primaryColor = color
+            RespriteEngine.touch()
             okResult("primaryColor", color.toString())
         }
     }
