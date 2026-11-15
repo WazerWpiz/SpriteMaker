@@ -39,16 +39,16 @@ object AgentClient {
         val steps: Int
     )
 
-    interface Callback {
-        fun onStep(step: Int, tool: String?, args: String?)
-        fun onResult(result: Result)
-    }
-
     /** Start an agent run with the given user prompt. */
-    fun run(context: Context, userPrompt: String, callback: Callback) {
+    fun run(
+        context: Context,
+        userPrompt: String,
+        onStep: (step: Int, tool: String?, args: String?) -> Unit,
+        onResult: (Result) -> Unit
+    ) {
         // Must be configured first.
         if (!AgentConfig.isConfigured(context)) {
-            callback.onResult(Result(false, "Agent not configured: missing API key / base URL.", 0))
+            onResult(Result(false, "Agent not configured: missing API key / base URL.", 0))
             return
         }
 
@@ -64,14 +64,14 @@ object AgentClient {
                 step++
                 val response = chatOnce(context, messages)
                 if (!response.success) {
-                    callback.onResult(Result(false, "API error: ${response.text}", step))
+                    onResult(Result(false, "API error: ${response.text}", step))
                     return@launch
                 }
 
                 // If the model returned tool calls, execute them one by one
                 if (response.toolCalls.isNotEmpty()) {
                     for (toolCall in response.toolCalls) {
-                        callback.onStep(step, toolCall.name, toolCall.arguments)
+                        onStep(step, toolCall.name, toolCall.arguments)
                         val toolResult = executeTool(toolCall)
                         // Append tool result as a tool message
                         messages.add(toolMessage(toolCall.id, toolResult))
@@ -82,11 +82,11 @@ object AgentClient {
 
                 // Model answered with text (no tool call) — this is the final answer
                 val finalText = response.content ?: "No response from model."
-                callback.onResult(Result(true, finalText, step))
+                onResult(Result(true, finalText, step))
                 return@launch
             }
 
-            callback.onResult(Result(false, "Max steps ($maxSteps) reached without completion.", maxSteps))
+            onResult(Result(false, "Max steps ($maxSteps) reached without completion.", maxSteps))
         }
     }
 
@@ -209,8 +209,9 @@ object AgentClient {
         val conn = java.net.HttpURLConnection(java.net.URI(url).toURL())
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
-        if (apiKey.isNotBlank()) {
-            conn.setRequestProperty("Authorization", "Bearer $apiKey")
+        val key = AgentConfig.apiKey(context)
+        if (key.isNotBlank()) {
+            conn.setRequestProperty("Authorization", "Bearer $key")
         }
         conn.setDoOutput(true)
         conn.outputStream.use { it.write(jsonStr.toByteArray()) }

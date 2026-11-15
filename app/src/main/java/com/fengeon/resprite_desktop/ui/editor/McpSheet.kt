@@ -12,8 +12,6 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -286,24 +284,25 @@ fun McpSheet(onDismiss: () -> Unit) {
                 AgentConfig.Provider.CUSTOM
             )
 
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
                 Text("Provider", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
-                androidx.compose.material3.DropdownMenu(
-                    expanded = true,
-                    onDismissRequest = {},
+                // Simple provider selector: click to cycle
+                Button(
+                    onClick = {
+                        val idx = providerItems.indexOfFirst { it.id == agentProvider }
+                        val next = providerItems[(idx + 1) % providerItems.size]
+                        agentProvider = next.id
+                        if (next.id != AgentConfig.PROVIDER_CUSTOM) {
+                            agentModel = next.defaultModel
+                            agentBaseUrl = agentConfig.baseUrl(context, next.id)
+                        }
+                    },
                     modifier = Modifier.weight(1f)
                 ) {
-                    providerItems.forEach { p ->
-                        androidx.compose.material3.DropdownMenuItem(onClick = {
-                            agentProvider = p.id
-                            if (p.id != AgentConfig.PROVIDER_CUSTOM) {
-                                agentModel = p.defaultModel
-                                agentBaseUrl = agentConfig.baseUrl(context, p.id)
-                            }
-                        }) {
-                            Text(p.label, fontSize = 11.sp)
-                        }
-                    }
+                    Text(providerItems.firstOrNull { it.id == agentProvider }?.label ?: agentProvider, fontSize = 11.sp)
                 }
             }
 
