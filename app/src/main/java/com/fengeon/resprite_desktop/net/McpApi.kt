@@ -344,9 +344,10 @@ object McpApi {
             // command and holds a single snapshot per group.
             val byColour = LinkedHashMap<Int, ArrayList<Pair<Int, Int>>>()
             val lines = ascii.split('\n')
-            for (row, line in lines.withIndex()) {
-                // String is a CharSequence, not an Iterable<Char>, so it has no
-                // withIndex(); index into it directly instead.
+            // Plain index loops: String is a CharSequence (no withIndex/Iterable<Char>),
+            // and the compiler resolves that ambiguously here.
+            for (row in lines.indices) {
+                val line = lines[row]
                 for (col in line.indices) {
                     val ch = line[col]
                     if (ch == '.' || ch == ' ') continue
