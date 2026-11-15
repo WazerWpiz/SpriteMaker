@@ -290,7 +290,6 @@ object McpApi {
                 put(sym.toString(), "%08X".format(argb))
             }
         }
-        bmp.recycle()
         buildJsonObject {
             put("ok", true)
             put("result", buildJsonObject {
