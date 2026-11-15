@@ -91,8 +91,8 @@ import com.fengeon.resprite_desktop.model.Size
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
+import android.provider.DocumentsContract
+import android.widget.Toast
 
 // Tools that have a real handler in onStrokeStart/onStrokeEnd. Tool.Select and
 // Tool.Gradient exist in the enum but are not wired yet, so they are hidden from
@@ -144,10 +144,14 @@ fun EditorScreen() {
     var playing by remember { mutableStateOf(false) }
     val activeStroke = remember { mutableStateOf<PaintStrokeCmd?>(null) }
 
-    // Export modal
+    // Export modal. Exports go through the system file picker (SAF), so the file
+    // lands wherever the user chooses (Downloads, Pictures, ...) and is visible to
+    // file managers and the gallery. The old app-private exports/ folder is not
+    // browsable on Android 11+, which made exports look like they vanished.
     var exportOpen by remember { mutableStateOf(false) }
-    var exportStatus by remember { mutableStateOf("") }
     val exportSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingExportLabel by remember { mutableStateOf("") }
 
     fun bump() { RespriteEngine.touch() }
 
@@ -203,6 +207,64 @@ fun EditorScreen() {
         }
     }
 
+    // ---- export launchers (SAF: user picks the destination) ----------------
+
+    fun reportExport(message: String) {
+        statusText = message
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
+    fun writePendingExport(uri: android.net.Uri?) {
+        val bytes = pendingExportBytes
+        if (uri == null || bytes == null) return
+        val label = pendingExportLabel
+        scope.launch {
+            val msg = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)!!.use { it.write(bytes) }
+                    "$label saved (${(bytes.size / 1024).coerceAtLeast(1)} KB)"
+                }.getOrElse { "Export failed: ${it.message}" }
+            }
+            reportExport(msg)
+        }
+    }
+
+    val pngExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/png")
+    ) { uri -> writePendingExport(uri) }
+
+    val gifExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/gif")
+    ) { uri -> writePendingExport(uri) }
+
+    // "All frames" writes one PNG per frame into a folder the user picks.
+    val framesDirLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val msg = withContext(Dispatchers.IO) {
+                runCatching {
+                    val resolver = context.contentResolver
+                    val rootId = DocumentsContract.getTreeDocumentId(treeUri)
+                    val rootDoc = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootId)
+                    val count = state.document.frameDatas.size
+                    for (i in 0 until count) {
+                        // Generate on the UI thread (bitmaps are not thread-safe),
+                        // write on IO.
+                        val bytes = RespriteEngine.onMain { buildFramePng(state, i) }
+                        val docUri = DocumentsContract.createDocument(
+                            resolver, rootDoc, "image/png", "frame_$i.png"
+                        ) ?: error("could not create frame_$i.png")
+                        resolver.openOutputStream(docUri)!!.use { it.write(bytes) }
+                    }
+                    "$count PNG frames exported"
+                }.getOrElse { "Export failed: ${it.message}" }
+            }
+            reportExport(msg)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -234,7 +296,7 @@ fun EditorScreen() {
                     IconButton(onClick = { saveLauncher.launch("sprite.resprite") }) {
                         Icon(Icons.Filled.Save, "Save", tint = MaterialTheme.colorScheme.onSurface)
                     }
-                    IconButton(onClick = { exportOpen = true; exportStatus = "" }) {
+                    IconButton(onClick = { exportOpen = true }) {
                         Icon(Icons.Filled.FileDownload, "Export", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
@@ -442,12 +504,12 @@ fun EditorScreen() {
                 // Current frame PNG
                 ListItem(
                     headlineContent = { Text("Current Frame (PNG)", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp) },
-                    supportingContent = { Text("Export the currently selected frame as PNG", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
+                    supportingContent = { Text("Save the selected frame as PNG — you pick the location", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
                     modifier = Modifier.fillMaxWidth().background(Color.Transparent).clickable {
-                        exportCurrentFramePng(context, state, scope) { msg ->
-                            exportStatus = msg
-                            exportOpen = false
-                        }
+                        pendingExportBytes = buildFramePng(state, state.selectedFrameIndex)
+                        pendingExportLabel = "Frame ${state.selectedFrameIndex} PNG"
+                        exportOpen = false
+                        pngExportLauncher.launch("frame_${state.selectedFrameIndex}.png")
                     }
                 )
                 HorizontalDivider(color = C.divider)
@@ -455,12 +517,10 @@ fun EditorScreen() {
                 // All frames as PNG
                 ListItem(
                     headlineContent = { Text("All Frames (PNG)", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp) },
-                    supportingContent = { Text("Export each frame as a separate PNG file", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
+                    supportingContent = { Text("Each frame as its own PNG in a folder you pick", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
                     modifier = Modifier.fillMaxWidth().background(Color.Transparent).clickable {
-                        exportPngFrames(context, state, scope) { msg ->
-                            exportStatus = msg
-                            exportOpen = false
-                        }
+                        exportOpen = false
+                        framesDirLauncher.launch(null)
                     }
                 )
                 HorizontalDivider(color = C.divider)
@@ -468,12 +528,12 @@ fun EditorScreen() {
                 // Sprite sheet PNG
                 ListItem(
                     headlineContent = { Text("Sprite Sheet (PNG)", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp) },
-                    supportingContent = { Text("All frames in a horizontal strip", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
+                    supportingContent = { Text("All frames in one horizontal strip PNG", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
                     modifier = Modifier.fillMaxWidth().background(Color.Transparent).clickable {
-                        exportPngSheet(context, state, scope) { msg ->
-                            exportStatus = msg
-                            exportOpen = false
-                        }
+                        pendingExportBytes = buildSheetPng(state)
+                        pendingExportLabel = "Sprite sheet"
+                        exportOpen = false
+                        pngExportLauncher.launch("sheet.png")
                     }
                 )
                 HorizontalDivider(color = C.divider)
@@ -481,119 +541,64 @@ fun EditorScreen() {
                 // GIF animation
                 ListItem(
                     headlineContent = { Text("Animation (GIF)", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp) },
-                    supportingContent = { Text("Animated GIF with frame delays", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
+                    supportingContent = { Text("Animated GIF with transparent background", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) },
                     modifier = Modifier.fillMaxWidth().background(Color.Transparent).clickable {
-                        exportGif(context, state, scope) { msg ->
-                            exportStatus = msg
-                            exportOpen = false
-                        }
+                        pendingExportBytes = buildGif(state)
+                        pendingExportLabel = "GIF"
+                        exportOpen = false
+                        gifExportLauncher.launch("animation.gif")
                     }
                 )
-
-                if (exportStatus.isNotBlank()) {
-                    HorizontalDivider(color = C.divider, modifier = Modifier.padding(vertical = 8.dp))
-                    Text(exportStatus, color = C.statusText, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                }
             }
         }
     }
 }
 
-// ===== Top-level export functions (called from EditorScreen) =====
+// ===== Top-level export encoders (pure: state -> file bytes) =====
 
-private fun exportGif(context: android.content.Context, state: com.fengeon.resprite_desktop.commands.EditorState, scope: kotlinx.coroutines.CoroutineScope, onResult: (String) -> Unit) {
-    scope.launch {
-        val result = withContext(Dispatchers.IO) {
-            runCatching {
-                val w = state.canvasWidth
-                val h = state.canvasHeight
-                val fps = state.document.frameRate.coerceIn(1, 60)
-                val frames = ArrayList<IntArray>(state.document.frameDatas.size)
-                val delays = ArrayList<Int>(state.document.frameDatas.size)
-                for (i in state.document.frameDatas.indices) {
-                    val bmp = Compositor.flatten(state, i)
-                    val px = IntArray(w * h)
-                    bmp.getPixels(px, 0, w, 0, 0, w, h)
-                    bmp.recycle()
-                    frames.add(px)
-                    val mult = state.document.frameDatas[i].duration.coerceAtLeast(1)
-                    delays.add(((100 * mult) / fps).coerceAtLeast(2))
-                }
-                val gif = GifEncoder.encode(w, h, frames, delays)
-                val dir = File(context.getExternalFilesDir(null), "exports")
-                dir.mkdirs()
-                val file = File(dir, "animation_${System.currentTimeMillis()}.gif")
-                FileOutputStream(file).use { it.write(gif) }
-                "GIF exported: ${file.name} (${gif.size / 1024} KB, ${frames.size} frames)"
-            }
-        }
-        onResult(result.getOrElse { "Export failed: ${it.message}" })
-    }
+/** Renders one flattened frame as PNG bytes. */
+private fun buildFramePng(state: com.fengeon.resprite_desktop.commands.EditorState, frameIndex: Int): ByteArray {
+    val bmp = Compositor.flatten(state, frameIndex)
+    val out = java.io.ByteArrayOutputStream()
+    bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+    bmp.recycle()
+    return out.toByteArray()
 }
 
-private fun exportPngSheet(context: android.content.Context, state: com.fengeon.resprite_desktop.commands.EditorState, scope: kotlinx.coroutines.CoroutineScope, onResult: (String) -> Unit) {
-    scope.launch {
-        val result = withContext(Dispatchers.IO) {
-            runCatching {
-                val w = state.canvasWidth
-                val h = state.canvasHeight
-                val count = state.document.frameDatas.size
-                val sheet = Bitmap.createBitmap(w * count, h, Bitmap.Config.ARGB_8888)
-                val canvas = android.graphics.Canvas(sheet)
-                for (i in 0 until count) {
-                    val frame = Compositor.flatten(state, i)
-                    canvas.drawBitmap(frame, (i * w).toFloat(), 0f, null)
-                    frame.recycle()
-                }
-                val dir = File(context.getExternalFilesDir(null), "exports")
-                dir.mkdirs()
-                val file = File(dir, "sheet_${System.currentTimeMillis()}.png")
-                FileOutputStream(file).use { sheet.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                sheet.recycle()
-                "Sprite sheet exported: ${file.name} (${file.length() / 1024} KB, $count frames)"
-            }
-        }
-        onResult(result.getOrElse { "Export failed: ${it.message}" })
+/** Renders every frame side by side into one sprite-sheet PNG. */
+private fun buildSheetPng(state: com.fengeon.resprite_desktop.commands.EditorState): ByteArray {
+    val w = state.canvasWidth.coerceAtLeast(1)
+    val h = state.canvasHeight.coerceAtLeast(1)
+    val count = state.document.frameDatas.size.coerceAtLeast(1)
+    val sheet = Bitmap.createBitmap(w * count, h, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(sheet)
+    for (i in 0 until count) {
+        val frame = Compositor.flatten(state, i)
+        canvas.drawBitmap(frame, (i * w).toFloat(), 0f, null)
+        frame.recycle()
     }
+    val out = java.io.ByteArrayOutputStream()
+    sheet.compress(Bitmap.CompressFormat.PNG, 100, out)
+    sheet.recycle()
+    return out.toByteArray()
 }
 
-private fun exportPngFrames(context: android.content.Context, state: com.fengeon.resprite_desktop.commands.EditorState, scope: kotlinx.coroutines.CoroutineScope, onResult: (String) -> Unit) {
-    scope.launch {
-        val result = withContext(Dispatchers.IO) {
-            runCatching {
-                val w = state.canvasWidth
-                val h = state.canvasHeight
-                val count = state.document.frameDatas.size
-                val dir = File(context.getExternalFilesDir(null), "exports")
-                dir.mkdirs()
-                for (i in 0 until count) {
-                    val frame = Compositor.flatten(state, i)
-                    val file = File(dir, "frame_${i}_${System.currentTimeMillis()}.png")
-                    FileOutputStream(file).use { frame.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                    frame.recycle()
-                }
-                "$count PNG frames exported to exports/ folder"
-            }
-        }
-        onResult(result.getOrElse { "Export failed: ${it.message}" })
+/** Renders every frame into one looping animated GIF. */
+private fun buildGif(state: com.fengeon.resprite_desktop.commands.EditorState): ByteArray {
+    val w = state.canvasWidth
+    val h = state.canvasHeight
+    val fps = state.document.frameRate.coerceIn(1, 60)
+    val frames = ArrayList<IntArray>(state.document.frameDatas.size)
+    val delays = ArrayList<Int>(state.document.frameDatas.size)
+    for (i in state.document.frameDatas.indices) {
+        val bmp = Compositor.flatten(state, i)
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
+        bmp.recycle()
+        frames.add(px)
+        // FrameData.duration is a frame multiplier; convert to centiseconds.
+        val mult = state.document.frameDatas[i].duration.coerceAtLeast(1)
+        delays.add(((100 * mult) / fps).coerceAtLeast(2))
     }
-}
-
-private fun exportCurrentFramePng(context: android.content.Context, state: com.fengeon.resprite_desktop.commands.EditorState, scope: kotlinx.coroutines.CoroutineScope, onResult: (String) -> Unit) {
-    scope.launch {
-        val result = withContext(Dispatchers.IO) {
-            runCatching {
-                val w = state.canvasWidth
-                val h = state.canvasHeight
-                val frame = Compositor.flatten(state, state.selectedFrameIndex)
-                val dir = File(context.getExternalFilesDir(null), "exports")
-                dir.mkdirs()
-                val file = File(dir, "frame_${state.selectedFrameIndex}_${System.currentTimeMillis()}.png")
-                FileOutputStream(file).use { frame.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                frame.recycle()
-                "Current frame exported: ${file.name}"
-            }
-        }
-        onResult(result.getOrElse { "Export failed: ${it.message}" })
-    }
+    return GifEncoder.encode(w, h, frames, delays)
 }
