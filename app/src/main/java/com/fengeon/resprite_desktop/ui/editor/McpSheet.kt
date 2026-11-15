@@ -44,6 +44,19 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
 import com.fengeon.resprite_desktop.net.AgentClient
 import com.fengeon.resprite_desktop.net.AgentConfig
 import com.fengeon.resprite_desktop.net.McpServer
@@ -253,25 +266,27 @@ fun McpSheet(onDismiss: () -> Unit) {
                 else -> {}
             }
 
-            // ---- AI Agent (runs locally on this device) -----------------------
+            // ---- AI Agent (runs on this device) ------------------------------
             HorizontalDivider(color = C.divider, modifier = Modifier.padding(top = 16.dp))
+
             Text(
                 "AI Agent",
-                fontSize = 13.sp,
+                style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(top = 12.dp)
             )
             Text(
-                "An agent that runs on this device, calls the local tool API, and draws for you. " +
-                    "Configure a provider, enter your API key, then send a prompt.",
+                "Runs on this phone. It calls a provider with your own key, then draws " +
+                    "through the local tool API — no remote server needed.",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
             )
 
             val agentConfig = AgentConfig
             var agentProvider by remember { mutableStateOf(agentConfig.provider) }
             var agentApiKey by remember { mutableStateOf(agentConfig.apiKey(context)) }
+            var agentKeyVisible by remember { mutableStateOf(false) }
             var agentModel by remember { mutableStateOf(agentConfig.model(context)) }
             var agentBaseUrl by remember { mutableStateOf(agentConfig.baseUrl(context)) }
             var agentMaxSteps by remember { mutableStateOf(agentConfig.maxSteps(context)) }
@@ -279,112 +294,33 @@ fun McpSheet(onDismiss: () -> Unit) {
             var agentResult by remember { mutableStateOf<String?>(null) }
             var agentRunning by remember { mutableStateOf(false) }
             var agentSteps by remember { mutableStateOf(0) }
+            var agentConfigOk by remember { mutableStateOf(agentConfig.isConfigured(context)) }
 
-            val providerItems = listOf(
+            val agentProviders = listOf(
                 AgentConfig.Provider.OPENROUTER,
                 AgentConfig.Provider.NVIDIA,
                 AgentConfig.Provider.CUSTOM
             )
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Text("Provider", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
-                // Simple provider selector: click to cycle
-                Button(
-                    onClick = {
-                        val idx = providerItems.indexOfFirst { it.id == agentProvider }
-                        val next = providerItems[(idx + 1) % providerItems.size]
-                        agentProvider = next.id
-                        if (next.id != AgentConfig.PROVIDER_CUSTOM) {
-                            agentModel = next.defaultModel
-                            agentBaseUrl = agentConfig.baseUrl(context, next.id)
-                        }
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(providerItems.firstOrNull { it.id == agentProvider }?.label ?: agentProvider, fontSize = 11.sp)
-                }
-            }
+            fun agentValid(): Boolean =
+                if (agentProvider == AgentConfig.PROVIDER_CUSTOM) agentBaseUrl.isNotBlank()
+                else agentApiKey.isNotBlank()
 
-            OutlinedTextField(
-                value = agentApiKey,
-                onValueChange = { agentApiKey = it },
-                label = { Text("API Key", fontSize = 11.sp) },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                visualTransformation = PasswordVisualTransformation()
-            )
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Text("Model", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
-                OutlinedTextField(
-                    value = agentModel,
-                    onValueChange = { agentModel = it },
-                    modifier = Modifier.weight(1f)
+            fun saveAgentConfig() {
+                agentConfig.save(
+                    context,
+                    agentProvider,
+                    agentApiKey,
+                    agentModel,
+                    agentBaseUrl,
+                    agentMaxSteps
                 )
-            }
-
-            if (agentProvider == AgentConfig.PROVIDER_CUSTOM) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                ) {
-                    Text("Base URL", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
-                    OutlinedTextField(
-                        value = agentBaseUrl,
-                        onValueChange = { agentBaseUrl = it },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Text("Max steps", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(80.dp))
-                androidx.compose.material3.Slider(
-                    value = agentMaxSteps.toFloat(),
-                    onValueChange = { agentMaxSteps = it.roundToInt() },
-                    valueRange = 1f..60f,
-                    steps = 59,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(agentMaxSteps.toString(), fontSize = 11.sp, modifier = Modifier.width(32.dp))
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Button(
-                    onClick = {
-                        agentConfig.save(
-                            context,
-                            agentProvider,
-                            agentApiKey,
-                            agentModel,
-                            agentBaseUrl,
-                            agentMaxSteps
-                        )
-                        agentResult = "Saved."
-                    },
-                    enabled = agentApiKey.isNotBlank() || agentProvider == AgentConfig.PROVIDER_CUSTOM
-                ) {
-                    Text("Save config")
-                }
-                if (agentConfig.isConfigured(context)) {
-                    Text("Configured", fontSize = 11.sp, color = C.statusText, modifier = Modifier.padding(start = 12.dp))
-                } else {
-                    Text("Missing API key / URL", fontSize = 11.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 12.dp))
-                }
+                agentConfigOk = agentConfig.isConfigured(context)
             }
 
             fun runAgent() {
+                saveAgentConfig()
+                if (agentPrompt.isBlank()) return
                 agentRunning = true
                 agentSteps = 0
                 agentResult = "Thinking…"
@@ -393,58 +329,224 @@ fun McpSheet(onDismiss: () -> Unit) {
                     userPrompt = agentPrompt,
                     onStep = { step, tool, args ->
                         agentSteps = step
-                        agentResult = "Step $step: ${tool ?: "thinking"} ${args.orEmpty()}"
+                        agentResult = "Step $step — ${tool ?: "thinking"}" +
+                            (args?.let { "\n$it" } ?: "")
                     },
                     onResult = { result ->
                         agentRunning = false
                         agentSteps = result.steps
                         agentResult = if (result.success) {
-                            "Done in ${result.steps} step(s): ${result.text}"
+                            "Finished in ${result.steps} step(s).\n${result.text}"
                         } else {
-                            "Error: ${result.text}"
+                            "Failed: ${result.text}"
                         }
                     }
                 )
             }
 
+            // Every agent control lives inside one rounded surface so the sheet
+            // reads as labelled groups instead of loose rows.
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+
+                    Text(
+                        "PROVIDER",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    ) {
+                        agentProviders.forEach { p ->
+                            val selected = p.id == agentProvider
+                            val shape = RoundedCornerShape(10.dp)
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(shape)
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surface
+                                    )
+                                    .border(
+                                        width = if (selected) 1.5.dp else 1.dp,
+                                        color = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.outlineVariant,
+                                        shape = shape
+                                    )
+                                    .clickable {
+                                        agentProvider = p.id
+                                        if (p.id != AgentConfig.PROVIDER_CUSTOM) {
+                                            agentModel = p.defaultModel
+                                            agentBaseUrl = agentConfig.baseUrl(context, p.id)
+                                        }
+                                        saveAgentConfig()
+                                    }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    p.label.substringBefore(' '),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
+                    ) {
+                        Text(
+                            "API KEY",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            if (agentConfigOk) "saved" else "not set",
+                            fontSize = 10.sp,
+                            color = if (agentConfigOk) C.statusText
+                            else MaterialTheme.colorScheme.error
+                        )
+                    }
+                    OutlinedTextField(
+                        value = agentApiKey,
+                        onValueChange = { agentApiKey = it },
+                        placeholder = { Text("Paste your key", fontSize = 12.sp) },
+                        singleLine = true,
+                        visualTransformation =
+                        if (agentKeyVisible) VisualTransformation.None
+                        else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            TextButton(onClick = { agentKeyVisible = !agentKeyVisible }) {
+                                Text(if (agentKeyVisible) "Hide" else "Show", fontSize = 10.sp)
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    )
+
+                    Text(
+                        if (agentProvider == AgentConfig.PROVIDER_CUSTOM) "BASE URL" else "MODEL",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                    OutlinedTextField(
+                        value = if (agentProvider == AgentConfig.PROVIDER_CUSTOM) agentBaseUrl else agentModel,
+                        onValueChange = {
+                            if (agentProvider == AgentConfig.PROVIDER_CUSTOM) agentBaseUrl = it
+                            else agentModel = it
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp
+                        ),
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    )
+
+                    Text(
+                        "MAX STEPS  ·  $agentMaxSteps",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                    Slider(
+                        value = agentMaxSteps.toFloat(),
+                        onValueChange = { agentMaxSteps = it.roundToInt() },
+                        valueRange = 1f..40f,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Button(
+                        onClick = { saveAgentConfig() },
+                        enabled = agentValid(),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    ) { Text("Save configuration") }
+                }
+            }
+
+            // ---- prompt + run -------------------------------------------------
+            Text(
+                "PROMPT",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 1.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 14.dp)
+            )
             OutlinedTextField(
                 value = agentPrompt,
                 onValueChange = { agentPrompt = it },
-                label = { Text("Prompt", fontSize = 11.sp) },
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                placeholder = { Text("draw a 16x16 red heart using draw_pixels", fontSize = 12.sp) },
                 minLines = 3,
+                maxLines = 5,
+                shape = RoundedCornerShape(12.dp),
                 keyboardActions = KeyboardActions(onDone = {
-                    if (!agentRunning && agentConfig.isConfigured(context) && agentPrompt.isNotBlank()) {
-                        runAgent()
-                    }
-                })
+                    if (!agentRunning && agentValid() && agentPrompt.isNotBlank()) runAgent()
+                }),
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
             )
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            Button(
+                onClick = { runAgent() },
+                enabled = !agentRunning && agentValid() && agentPrompt.isNotBlank(),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
             ) {
-                Button(
-                    onClick = { if (!agentRunning) runAgent() },
-                    enabled = !agentRunning && agentConfig.isConfigured(context) && agentPrompt.isNotBlank()
-                ) {
-                    Text(if (agentRunning) "Running…" else "Run Agent")
-                }
                 if (agentRunning) {
-                    Text("Step $agentSteps", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp))
+                    androidx.compose.material3.CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text("  Running  ·  step $agentSteps")
+                } else {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("  Run agent")
                 }
             }
 
-            if (agentResult != null) {
-                Text(
-                    agentResult!!,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth()
-                )
+            agentResult?.let { result ->
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, C.divider),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 180.dp)
+                        .padding(top = 10.dp)
+                ) {
+                    Text(
+                        result,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                        lineHeight = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .verticalScroll(rememberScrollState())
+                            .padding(10.dp)
+                    )
+                }
             }
-
-
         }
     }
 }
