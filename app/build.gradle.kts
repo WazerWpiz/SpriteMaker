@@ -26,6 +26,16 @@ android {
             keyAlias = System.getenv("RESPRITE_KEY_ALIAS") ?: "mcpresprite"
             keyPassword = System.getenv("RESPRITE_KEY_PASS") ?: "mcpresprite"
         }
+        // CI rebuilds the debug APK on every push. A stock debug build makes each
+        // runner generate its own debug keystore, so installing the new APK over
+        // the old one failed with INSTALL_FAILED_UPDATE_INCOMPATIBLE and forced a
+        // full uninstall every time. This committed key keeps updates installable.
+        create("debugStable") {
+            storeFile = file("../keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "mcpresprite-debug"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -41,6 +51,11 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isMinifyEnabled = false
+            // Fall back to the stock generated debug key if the committed keystore
+            // is missing (e.g. someone pruned it), so the build never breaks.
+            if (file("../keystore/debug.keystore").exists()) {
+                signingConfig = signingConfigs.getByName("debugStable")
+            }
         }
     }
 
