@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import com.fengeon.resprite_desktop.ui.rsColors
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,6 +54,7 @@ fun CanvasView(
     onStrokeEnd: (startX: Int, startY: Int, endX: Int, endY: Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val canvasColors = rsColors
     val containerSize = remember { mutableStateOf(IntSize.Zero) }
     val userScale = remember { mutableStateOf(1f) }
     val userPan = remember { mutableStateOf(Offset.Zero) }
@@ -138,7 +140,7 @@ fun CanvasView(
                 val rows = (drawH / checkSize).toInt()
                 for (r in 0..rows) {
                     for (c in 0..cols) {
-                        val color = if ((r + c) % 2 == 0) Color(0xFFCCCCCC) else Color(0xFFFFFFFF)
+                        val color = if ((r + c) % 2 == 0) canvasColors.checkerDark else canvasColors.checkerLight
                         drawRect(
                             color = color,
                             topLeft = Offset(finalX + c * checkSize, finalY + r * checkSize),

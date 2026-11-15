@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.fengeon.resprite_desktop.model.Palette
+import com.fengeon.resprite_desktop.ui.rsColors
 
 @Composable
 fun PalettePanel(
@@ -44,12 +46,12 @@ fun PalettePanel(
         ) {
             // current primary / secondary swatches
             Box(modifier = Modifier.size(28.dp).background(Color(primary), RoundedCornerShape(4.dp))
-                .border(1.dp, Color.White, RoundedCornerShape(4.dp)))
+                .border(1.dp, rsColors.swatchBorderActive, RoundedCornerShape(4.dp)))
             Box(modifier = Modifier.size(28.dp).background(Color(secondary), RoundedCornerShape(4.dp))
-                .border(1.dp, Color.Gray, RoundedCornerShape(4.dp)))
+                .border(1.dp, rsColors.swatchBorder, RoundedCornerShape(4.dp)))
             Box(modifier = Modifier.clickable { menuOpen = true }
                 .padding(horizontal = 8.dp, vertical = 6.dp)) {
-                Text("Palette: ${palette.name} ▾", color = Color.White)
+                Text("Palette: ${palette.name} ▾", color = MaterialTheme.colorScheme.onSurface)
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 Palette.BUILT_INS.forEach { p ->
@@ -71,7 +73,7 @@ fun PalettePanel(
                         .background(Color(c), RoundedCornerShape(3.dp))
                         .border(
                             if (c == primary) 2.dp else 1.dp,
-                            if (c == primary) Color.White else Color(0xFF505050),
+                            if (c == primary) rsColors.swatchBorderActive else rsColors.swatchBorder,
                             RoundedCornerShape(3.dp)
                         )
                         .clickable { onPrimaryChange(c) }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.Gradient
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Save
@@ -39,6 +41,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -57,6 +62,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fengeon.resprite_desktop.ui.rsColors
 import com.fengeon.resprite_desktop.commands.CreateFrameCmd
 import com.fengeon.resprite_desktop.commands.CreateLayerCmd
 import com.fengeon.resprite_desktop.commands.DeleteLayerCmd
@@ -75,6 +81,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+// Tools that have a real handler in onStrokeStart/onStrokeEnd. Tool.Select and
+// Tool.Gradient exist in the enum but are not wired yet, so they are hidden from
+// the toolbar instead of sitting there dead (see design/editor-redesign.html).
+private val TOOLS_WITH_HANDLERS: List<Tool> = listOf(
+    Tool.Pencil, Tool.Eraser, Tool.Fill, Tool.Line, Tool.Rect, Tool.Ellipse,
+    Tool.Move, Tool.Eyedropper
+)
+
 private val toolIcons: Map<Tool, ImageVector> = mapOf(
     Tool.Pencil to Icons.Filled.Edit,
     Tool.Eraser to Icons.Filled.AutoFixHigh,
@@ -91,6 +105,7 @@ private val toolIcons: Map<Tool, ImageVector> = mapOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen() {
+    val C = rsColors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -102,6 +117,7 @@ fun EditorScreen() {
     var palette by remember { mutableStateOf(Palette.COMMODORE_64) }
     var version by remember { mutableStateOf(0L) }
     var statusText by remember { mutableStateOf("ready") }
+    var layersOpen by remember { mutableStateOf(false) }
 
     fun bump() { version = System.nanoTime() }
     fun activeCellId(): String = state.ensureCell(state.selectedLayerIndex, state.selectedFrameIndex)
@@ -149,20 +165,20 @@ fun EditorScreen() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Resprite", fontWeight = FontWeight.Bold, color = Color.White) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1E1E1E)),
+                title = { Text("Resprite", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = C.topBar),
                 actions = {
                     IconButton(onClick = { undo.undo(state); bump() }, enabled = undo.canUndo) {
-                        Icon(Icons.Filled.Undo, "Undo", tint = if (undo.canUndo) Color.White else Color.Gray)
+                        Icon(Icons.Filled.Undo, "Undo", tint = if (undo.canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     IconButton(onClick = { undo.redo(state); bump() }, enabled = undo.canRedo) {
-                        Icon(Icons.Filled.Redo, "Redo", tint = if (undo.canRedo) Color.White else Color.Gray)
+                        Icon(Icons.Filled.Redo, "Redo", tint = if (undo.canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     IconButton(onClick = { openLauncher.launch(arrayOf("*/*")) }) {
-                        Icon(Icons.Filled.FolderOpen, "Open", tint = Color.White)
+                        Icon(Icons.Filled.FolderOpen, "Open", tint = MaterialTheme.colorScheme.onSurface)
                     }
                     IconButton(onClick = { saveLauncher.launch("sprite.resprite") }) {
-                        Icon(Icons.Filled.Save, "Save", tint = Color.White)
+                        Icon(Icons.Filled.Save, "Save", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             )
@@ -172,30 +188,34 @@ fun EditorScreen() {
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()
-                .background(Color(0xFF202020))
+                .background(C.panelDeep)
         ) {
             // Toolbar: icons only
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF282828))
+                    .background(C.panel)
                     .padding(horizontal = 4.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                Tool.values().forEach { t ->
+                TOOLS_WITH_HANDLERS.forEach { t ->
                     IconButton(
                         onClick = { tool = t },
                         modifier = Modifier
                             .size(40.dp)
                             .background(
-                                if (tool == t) Color(0xFF4FC3F7) else Color.Transparent,
+                                if (tool == t) C.toolActiveBg else Color.Transparent,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .border(
+                                if (tool == t) C.toolActiveBg else Color.Transparent,
                                 RoundedCornerShape(6.dp)
                             )
                     ) {
                         Icon(
                             imageVector = toolIcons[t] ?: Icons.Filled.Edit,
                             contentDescription = t.name,
-                            tint = if (tool == t) Color.Black else Color(0xFFCCCCCC),
+                            tint = if (tool == t) C.toolIconActive else C.toolIcon,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -211,8 +231,7 @@ fun EditorScreen() {
                 onPaletteChange = { palette = it; primary = it.colors.firstOrNull() ?: primary }
             )
 
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                Column(modifier = Modifier.weight(1f).padding(4.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().weight(1f).padding(4.dp)) {
                     val composite = remember(version, state.selectedFrameIndex) { composeLayers(state) }
                     CanvasView(
                         composite = composite,
@@ -254,41 +273,11 @@ fun EditorScreen() {
                     )
                 }
 
-                Column(
-                    modifier = Modifier
-                        .size(width = 140.dp, height = 0.dp)
-                        .fillMaxSize()
-                        .background(Color(0xFF1A1A1A))
-                        .padding(4.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Layers", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                        IconButton(onClick = {
-                            undo.execute(state, CreateLayerCmd(state.document.layerDatas.size, state.document.frameDatas.size)); bump()
-                        }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.Add, "Add", tint = Color.White, modifier = Modifier.size(16.dp)) }
-                        IconButton(onClick = {
-                            if (state.document.layerDatas.size > 1) { undo.execute(state, DeleteLayerCmd(state.selectedLayerIndex)); bump() }
-                        }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.Delete, "Del", tint = Color.White, modifier = Modifier.size(16.dp)) }
-                    }
-                    HorizontalDivider(color = Color(0xFF333333))
-                    LazyColumn(modifier = Modifier.weight(1f)) {
-                        itemsIndexed(state.document.layerDatas) { i, layer ->
-                            ListItem(
-                                headlineContent = { Text(layer.name, color = Color.White, fontSize = 12.sp) },
-                                modifier = Modifier
-                                    .background(if (i == state.selectedLayerIndex) Color(0xFF333333) else Color.Transparent)
-                                    .clickable { state.selectedLayerIndex = i; bump() }
-                            )
-                        }
-                    }
-                }
-            }
-
             // Frame strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF282828))
+                    .background(C.panel)
                     .padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -298,20 +287,54 @@ fun EditorScreen() {
                             modifier = Modifier
                                 .size(36.dp)
                                 .background(
-                                    if (i == state.selectedFrameIndex) Color(0xFF4FC3F7) else Color(0xFF3A3A3A),
+                                    if (i == state.selectedFrameIndex) C.frameSelectedBg else C.frameIdle,
                                     RoundedCornerShape(4.dp)
                                 )
                                 .clickable { state.selectedFrameIndex = i; bump() },
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("$i", color = if (i == state.selectedFrameIndex) Color.Black else Color.White, fontSize = 12.sp)
+                            Text("$i", color = if (i == state.selectedFrameIndex) C.toolIconActive else MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
                         }
                     }
                     IconButton(onClick = {
                         undo.execute(state, CreateFrameCmd(state.document.frameDatas.size, state.document.layerDatas.size, Size(state.canvasWidth, state.canvasHeight))); bump()
-                    }, modifier = Modifier.size(36.dp)) { Icon(Icons.Filled.Add, "Add frame", tint = Color.White) }
+                    }, modifier = Modifier.size(36.dp)) { Icon(Icons.Filled.Add, "Add frame", tint = MaterialTheme.colorScheme.onSurface) }
                 }
-                Text(statusText, color = Color(0xFF80CBC4), fontSize = 11.sp)
+                IconButton(onClick = { layersOpen = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Filled.List, "Layers", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+                }
+                Text(statusText, color = C.statusText, fontSize = 11.sp)
+            }
+        }
+    }
+
+    if (layersOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { layersOpen = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Text("Layers", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                IconButton(onClick = {
+                    undo.execute(state, CreateLayerCmd(state.document.layerDatas.size, state.document.frameDatas.size)); bump()
+                }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Add, "Add layer", tint = MaterialTheme.colorScheme.onSurface) }
+                IconButton(onClick = {
+                    if (state.document.layerDatas.size > 1) { undo.execute(state, DeleteLayerCmd(state.selectedLayerIndex)); bump() }
+                }, modifier = Modifier.size(32.dp)) { Icon(Icons.Filled.Delete, "Delete layer", tint = MaterialTheme.colorScheme.onSurface) }
+            }
+            HorizontalDivider(color = C.divider)
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).padding(bottom = 16.dp)) {
+                itemsIndexed(state.document.layerDatas) { i, layer ->
+                    ListItem(
+                        headlineContent = { Text(layer.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp) },
+                        modifier = Modifier
+                            .background(if (i == state.selectedLayerIndex) C.selectedRow else Color.Transparent)
+                            .clickable { state.selectedLayerIndex = i; bump(); layersOpen = false }
+                    )
+                }
             }
         }
     }
