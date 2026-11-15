@@ -29,7 +29,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FormatColorFill
 import androidx.compose.material.icons.filled.Gradient
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Save
@@ -304,7 +304,7 @@ fun EditorScreen() {
                     }, modifier = Modifier.size(36.dp)) { Icon(Icons.Filled.Add, "Add frame", tint = MaterialTheme.colorScheme.onSurface) }
                 }
                 IconButton(onClick = { layersOpen = true }, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Filled.List, "Layers", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Layers, "Layers", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                 }
                 Text("${state.canvasWidth}×${state.canvasHeight}  ${zoomPct}%", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 Text(statusText, color = C.statusText, fontSize = 11.sp)
