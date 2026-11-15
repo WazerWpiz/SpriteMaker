@@ -67,14 +67,16 @@ import com.fengeon.resprite_desktop.ui.rsColors
 import com.fengeon.resprite_desktop.commands.CreateFrameCmd
 import com.fengeon.resprite_desktop.commands.CreateLayerCmd
 import com.fengeon.resprite_desktop.commands.DeleteLayerCmd
-import com.fengeon.resprite_desktop.commands.EditorState
 import com.fengeon.resprite_desktop.commands.Eyedropper
 import com.fengeon.resprite_desktop.commands.FillCmd
 import com.fengeon.resprite_desktop.commands.MoveCellCmd
 import com.fengeon.resprite_desktop.commands.PaintStrokeCmd
+import com.fengeon.resprite_desktop.engine.Compositor
+import com.fengeon.resprite_desktop.engine.RespriteEngine
+import com.fengeon.resprite_desktop.net.McpServer
+import androidx.compose.material.icons.filled.Settings
 import com.fengeon.resprite_desktop.commands.Shape
 import com.fengeon.resprite_desktop.commands.ShapeCmd
-import com.fengeon.resprite_desktop.commands.UndoManager
 import com.fengeon.resprite_desktop.format.RespriteFile
 import com.fengeon.resprite_desktop.model.Palette
 import com.fengeon.resprite_desktop.model.Size
@@ -110,19 +112,22 @@ fun EditorScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val state = remember { EditorState() }
-    val undo = remember { UndoManager() }
+    // Shared with the HTTP tool API: one document, one undo stack. Reading
+    // revision subscribes this composable to changes made from either side.
+    val revision = RespriteEngine.revision
+    val state = RespriteEngine.state
+    val undo = RespriteEngine.undo
     var tool by remember { mutableStateOf(Tool.Pencil) }
     var primary by remember { mutableStateOf(0xFF000000L.toInt()) }
     var secondary by remember { mutableStateOf(0xFFFFFFFFL.toInt()) }
     var palette by remember { mutableStateOf(Palette.COMMODORE_64) }
-    var version by remember { mutableStateOf(0L) }
     var statusText by remember { mutableStateOf("ready") }
     var layersOpen by remember { mutableStateOf(false) }
+    var mcpOpen by remember { mutableStateOf(false) }
     var zoomPct by remember { mutableStateOf(100) }
     val activeStroke = remember { mutableStateOf<PaintStrokeCmd?>(null) }
 
-    fun bump() { version = System.nanoTime() }
+    fun bump() { RespriteEngine.touch() }
     fun activeCellId(): String = state.ensureCell(state.selectedLayerIndex, state.selectedFrameIndex)
 
     val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -136,11 +141,7 @@ fun EditorScreen() {
                     runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
                         .getOrNull()?.let { id to it }
                 }.toMap()
-                state.document = contents.document
-                state.cellBitmaps.clear()
-                state.cellBitmaps.putAll(bitmaps)
-                undo.clear()
-                bump()
+                RespriteEngine.replaceDocument(contents.document, bitmaps)
                 statusText = "opened"
             }.onFailure { statusText = "open failed" }
         }
@@ -175,7 +176,6 @@ fun EditorScreen() {
                     // cannot observe them. Reading `version` here subscribes THIS
                     // lambda to the recomposition that bump() triggers; without it
                     // the bar never recomposed and both buttons stayed disabled.
-                    val revision = version
                     val canUndo = revision.let { undo.canUndo }
                     val canRedo = revision.let { undo.canRedo }
                     IconButton(onClick = { undo.undo(state); bump() }, enabled = canUndo) {
@@ -183,6 +183,13 @@ fun EditorScreen() {
                     }
                     IconButton(onClick = { undo.redo(state); bump() }, enabled = canRedo) {
                         Icon(Icons.Filled.Redo, "Redo", tint = if (canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClick = { mcpOpen = true }) {
+                        Icon(
+                            Icons.Filled.Settings,
+                            "AI access",
+                            tint = if (McpServer.isRunning) C.statusText else MaterialTheme.colorScheme.onSurface
+                        )
                     }
                     IconButton(onClick = { openLauncher.launch(arrayOf("*/*")) }) {
                         Icon(Icons.Filled.FolderOpen, "Open", tint = MaterialTheme.colorScheme.onSurface)
@@ -243,7 +250,7 @@ fun EditorScreen() {
             )
 
             Column(modifier = Modifier.fillMaxWidth().weight(1f).padding(4.dp)) {
-                    val composite = remember(version, state.selectedFrameIndex) { composeLayers(state) }
+                    val composite = remember(revision, state.selectedFrameIndex) { Compositor.flatten(state) }
                     CanvasView(
                         composite = composite,
                         tool = tool,
@@ -328,6 +335,10 @@ fun EditorScreen() {
         }
     }
 
+    if (mcpOpen) {
+        McpSheet(onDismiss = { mcpOpen = false })
+    }
+
     if (layersOpen) {
         ModalBottomSheet(
             onDismissRequest = { layersOpen = false },
@@ -358,20 +369,4 @@ fun EditorScreen() {
             }
         }
     }
-}
-
-private fun composeLayers(state: EditorState): Bitmap {
-    val w = state.canvasWidth
-    val h = state.canvasHeight
-    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-    val c = android.graphics.Canvas(out)
-    val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
-    for (layer in state.document.layerDatas) {
-        if (!layer.contentVisible) continue
-        val cell = layer.cells.getOrNull(state.selectedFrameIndex) ?: continue
-        val bmp = state.cellBitmaps[cell.id] ?: continue
-        paint.alpha = (cell.opacity.coerceIn(0f, 1f) * 255f).toInt()
-        c.drawBitmap(bmp, cell.bounds.origin.x.toFloat(), cell.bounds.origin.y.toFloat(), paint)
-    }
-    return out
 }
