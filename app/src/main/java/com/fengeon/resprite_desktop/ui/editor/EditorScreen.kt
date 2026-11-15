@@ -120,6 +120,7 @@ fun EditorScreen() {
     var statusText by remember { mutableStateOf("ready") }
     var layersOpen by remember { mutableStateOf(false) }
     var zoomPct by remember { mutableStateOf(100) }
+    val activeStroke = remember { mutableStateOf<PaintStrokeCmd?>(null) }
 
     fun bump() { version = System.nanoTime() }
     fun activeCellId(): String = state.ensureCell(state.selectedLayerIndex, state.selectedFrameIndex)
@@ -170,11 +171,18 @@ fun EditorScreen() {
                 title = { Text("Resprite", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = C.topBar),
                 actions = {
-                    IconButton(onClick = { undo.undo(state); bump() }, enabled = undo.canUndo) {
-                        Icon(Icons.Filled.Undo, "Undo", tint = if (undo.canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                    // UndoManager keeps its stacks in plain ArrayDeques, so Compose
+                    // cannot observe them. Reading `version` here subscribes THIS
+                    // lambda to the recomposition that bump() triggers; without it
+                    // the bar never recomposed and both buttons stayed disabled.
+                    val revision = version
+                    val canUndo = revision.let { undo.canUndo }
+                    val canRedo = revision.let { undo.canRedo }
+                    IconButton(onClick = { undo.undo(state); bump() }, enabled = canUndo) {
+                        Icon(Icons.Filled.Undo, "Undo", tint = if (canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    IconButton(onClick = { undo.redo(state); bump() }, enabled = undo.canRedo) {
-                        Icon(Icons.Filled.Redo, "Redo", tint = if (undo.canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                    IconButton(onClick = { undo.redo(state); bump() }, enabled = canRedo) {
+                        Icon(Icons.Filled.Redo, "Redo", tint = if (canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     IconButton(onClick = { openLauncher.launch(arrayOf("*/*")) }) {
                         Icon(Icons.Filled.FolderOpen, "Open", tint = MaterialTheme.colorScheme.onSurface)
@@ -242,8 +250,11 @@ fun EditorScreen() {
                         onStrokeStart = { x, y ->
                             when (tool) {
                                 Tool.Pencil, Tool.Eraser -> {
-                                    undo.execute(state, PaintStrokeCmd(activeCellId(), listOf(x to y),
-                                        if (tool == Tool.Eraser) 0 else primary, tool == Tool.Eraser, 1)); bump()
+                                    val cmd = PaintStrokeCmd(activeCellId(), listOf(x to y),
+                                        if (tool == Tool.Eraser) 0 else primary, tool == Tool.Eraser, 1)
+                                    undo.execute(state, cmd)
+                                    activeStroke.value = cmd
+                                    bump()
                                 }
                                 Tool.Fill -> { undo.execute(state, FillCmd(activeCellId(), x, y, primary)); bump() }
                                 Tool.Eyedropper -> { primary = Eyedropper.sample(state, x, y); bump() }
@@ -252,11 +263,11 @@ fun EditorScreen() {
                         },
                         onStrokeMove = { x0, y0, x1, y1 ->
                             if (tool == Tool.Pencil || tool == Tool.Eraser) {
-                                undo.execute(state, PaintStrokeCmd(activeCellId(), listOf(x0 to y0, x1 to y1),
-                                    if (tool == Tool.Eraser) 0 else primary, tool == Tool.Eraser, 1)); bump()
+                                activeStroke.value?.let { it.extend(state, x1, y1); bump() }
                             }
                         },
                         onStrokeEnd = { sx, sy, ex, ey ->
+                            activeStroke.value = null
                             if (tool == Tool.Move) {
                                 val dx = ex - sx; val dy = ey - sy
                                 if (dx != 0 || dy != 0) {
