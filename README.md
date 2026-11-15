@@ -1,10 +1,6 @@
 # McpResprite
 
-FOSS Kotlin/Compose clone of Resprite (package `com.fengeon.resprite_desktop`).
-Reads/writes the same `.resprite` zip format (document.json + CellData/*.png).
-No billing, no WeChat Pay, no analytics.
-
-## Build
+FOSS Kotlin/Compose 
 
 Requires JDK 17 + Android SDK (compileSdk 34).
 
