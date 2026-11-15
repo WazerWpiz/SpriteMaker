@@ -216,6 +216,16 @@ fun McpSheet(onDismiss: () -> Unit) {
             )
             val tunnelBusy = tunnel is TunnelManager.State.Running ||
                 tunnel === TunnelManager.State.Starting
+            // The button needs the HTTP server to be up: a tunnel publishes the
+            // port, it cannot start it. Saying so beats a greyed-out button.
+            if (!running && !tunnelBusy) {
+                Text(
+                    "Start the server above first — the tunnel just publishes that port.",
+                    fontSize = 11.sp,
+                    color = C.statusText,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = {
@@ -294,11 +304,12 @@ fun McpSheet(onDismiss: () -> Unit) {
             var agentModel by remember { mutableStateOf(agentConfig.model(context)) }
             var agentBaseUrl by remember { mutableStateOf(agentConfig.baseUrl(context)) }
             var agentMaxSteps by remember { mutableStateOf(agentConfig.maxSteps(context)) }
-            var agentPrompt by remember { mutableStateOf("") }
-            var agentResult by remember { mutableStateOf<String?>(null) }
-            var agentRunning by remember { mutableStateOf(false) }
-            var agentSteps by remember { mutableStateOf(0) }
             var agentConfigOk by remember { mutableStateOf(agentConfig.isConfigured(context)) }
+            var agentTestText by remember { mutableStateOf<String?>(null) }
+            var agentTestOk by remember { mutableStateOf(true) }
+            var agentBusy by remember { mutableStateOf(false) }
+            var agentModels by remember { mutableStateOf<List<AgentClient.ModelInfo>?>(null) }
+            var agentModelPickerOpen by remember { mutableStateOf(false) }
 
             val agentProviders = listOf(
                 AgentConfig.Provider.OPENROUTER,
@@ -322,30 +333,45 @@ fun McpSheet(onDismiss: () -> Unit) {
                 agentConfigOk = agentConfig.isConfigured(context)
             }
 
-            fun runAgent() {
+            fun testConnection() {
                 saveAgentConfig()
-                if (agentPrompt.isBlank()) return
-                agentRunning = true
-                agentSteps = 0
-                agentResult = "Thinking…"
-                AgentClient.run(
-                    context = context,
-                    userPrompt = agentPrompt,
-                    onStep = { step, tool, args ->
-                        agentSteps = step
-                        agentResult = "Step $step — ${tool ?: "thinking"}" +
-                            (args?.let { "\n$it" } ?: "")
-                    },
-                    onResult = { result ->
-                        agentRunning = false
-                        agentSteps = result.steps
-                        agentResult = if (result.success) {
-                            "Finished in ${result.steps} step(s).\n${result.text}"
-                        } else {
-                            "Failed: ${result.text}"
-                        }
+                agentBusy = true
+                agentTestText = "Testing…"
+                agentTestOk = true
+                AgentClient.testConnection(context) { result ->
+                    agentBusy = false
+                    agentTestOk = result.success
+                    agentTestText = if (result.success) {
+                        "OK — ${result.text}"
+                    } else {
+                        result.text
                     }
-                )
+                }
+            }
+
+            fun loadModels() {
+                saveAgentConfig()
+                agentBusy = true
+                agentTestText = "Loading models…"
+                agentTestOk = true
+                AgentClient.fetchModels(context) { result ->
+                    agentBusy = false
+                    if (result.success) {
+                        agentModels = result.models
+                        agentModelPickerOpen = true
+                        agentTestText = null
+                        // Remember a model that can actually call tools.
+                        val current = agentModel
+                        val stillThere = result.models.any { it.id == current }
+                        if (!stillThere) {
+                            val pickable = result.models.firstOrNull { it.supportsTools } ?: result.models.first()
+                            agentModel = pickable.id
+                        }
+                    } else {
+                        agentTestOk = false
+                        agentTestText = result.error
+                    }
+                }
             }
 
             // Every agent control lives inside one rounded surface so the sheet
@@ -467,7 +493,7 @@ fun McpSheet(onDismiss: () -> Unit) {
                     )
 
                     Text(
-                        "MAX STEPS  ·  $agentMaxSteps",
+                        "MAX STEPS  ·  $agentMaxSteps  (suggested 25–60)",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 1.sp,
@@ -490,70 +516,117 @@ fun McpSheet(onDismiss: () -> Unit) {
                 }
             }
 
-            // ---- prompt + run -------------------------------------------------
+            // ---- prompt moved to the editor ---------------------------------
             Text(
-                "PROMPT",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 1.sp,
+                "Prompt & run now live in the editor: tap ✨ in the toolbar (next to the " +
+                    "eyedropper) for a prompt panel with the canvas still visible above it.",
+                fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 14.dp)
             )
-            OutlinedTextField(
-                value = agentPrompt,
-                onValueChange = { agentPrompt = it },
-                placeholder = { Text("draw a 16x16 red heart using draw_pixels", fontSize = 12.sp) },
-                minLines = 3,
-                maxLines = 5,
-                shape = RoundedCornerShape(12.dp),
-                keyboardActions = KeyboardActions(onDone = {
-                    if (!agentRunning && agentValid() && agentPrompt.isNotBlank()) runAgent()
-                }),
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-            )
 
-            Button(
-                onClick = { runAgent() },
-                enabled = !agentRunning && agentValid() && agentPrompt.isNotBlank(),
-                shape = RoundedCornerShape(12.dp),
+            // ---- connection test + model list ----------------------------------
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
             ) {
-                if (agentRunning) {
-                    androidx.compose.material3.CircularProgressIndicator(
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text("  Running  ·  step $agentSteps")
-                } else {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("  Run agent")
-                }
+                Button(
+                    onClick = { testConnection() },
+                    enabled = agentValid() && !agentBusy,
+                    shape = RoundedCornerShape(10.dp)
+                ) { Text("Test connection") }
+                Button(
+                    onClick = { loadModels() },
+                    enabled = agentValid() && !agentBusy,
+                    shape = RoundedCornerShape(10.dp)
+                ) { Text("Load models") }
             }
 
-            agentResult?.let { result ->
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, C.divider),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 180.dp)
-                        .padding(top = 10.dp)
+            if (agentBusy) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.padding(top = 10.dp).size(18.dp)
+                )
+            }
+
+            agentTestText?.let { text ->
+                Text(
+                    text,
+                    fontSize = 11.sp,
+                    color = if (agentTestOk) C.statusText else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+
+            agentModels?.let { list ->
+                Text(
+                    "MODEL  ·  ${list.size} available",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 12.dp)
+                )
+                Button(
+                    onClick = { agentModelPickerOpen = !agentModelPickerOpen },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
                 ) {
                     Text(
-                        result,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        lineHeight = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier
-                            .verticalScroll(rememberScrollState())
-                            .padding(10.dp)
+                        (agentModel.substringAfter('/')) + if (agentModelPickerOpen) "  ▴" else "  ▾",
+                        fontSize = 11.sp,
+                        maxLines = 1
                     )
+                }
+                if (agentModelPickerOpen) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, C.divider),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 210.dp)
+                            .padding(top = 6.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 4.dp)
+                        ) {
+                            list.forEach { m ->
+                                val ctx = m.contextLength?.let { " · ${it / 1024}K ctx" } ?: ""
+                                val tools = if (m.supportsTools) "" else " · no tools"
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            agentModel = m.id
+                                            agentModelPickerOpen = false
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        m.id,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (m.id == agentModel) C.statusText
+                                        else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "$ctx$tools",
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
+
 
 @Composable
 private fun CopyRow(value: String, onCopy: () -> Unit) {

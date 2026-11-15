@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Colorize
@@ -80,6 +81,7 @@ import com.fengeon.resprite_desktop.commands.MoveCellCmd
 import com.fengeon.resprite_desktop.commands.PaintStrokeCmd
 import com.fengeon.resprite_desktop.engine.Compositor
 import com.fengeon.resprite_desktop.engine.RespriteEngine
+import com.fengeon.resprite_desktop.net.AgentRun
 import com.fengeon.resprite_desktop.net.McpServer
 import androidx.compose.material.icons.filled.Settings
 import com.fengeon.resprite_desktop.commands.Shape
@@ -140,6 +142,9 @@ fun EditorScreen() {
     var statusText by remember { mutableStateOf("ready") }
     var layersOpen by remember { mutableStateOf(false) }
     var mcpOpen by remember { mutableStateOf(false) }
+    // The agent prompt panel lives on the editor screen (✨ in the toolbar), not
+    // inside the settings sheet, because it is the control used most.
+    var agentOpen by remember { mutableStateOf(false) }
     var zoomPct by remember { mutableStateOf(100) }
     var playing by remember { mutableStateOf(false) }
     val activeStroke = remember { mutableStateOf<PaintStrokeCmd?>(null) }
@@ -340,6 +345,29 @@ fun EditorScreen() {
                         )
                     }
                 }
+                // Agent prompt panel: the control used most, so it sits in the
+                // toolbar next to the tools instead of buried in settings.
+                IconButton(
+                    onClick = { agentOpen = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(
+                            if (agentOpen || AgentRun.isRunning) C.toolActiveBg else Color.Transparent,
+                            RoundedCornerShape(6.dp)
+                        )
+                        .border(
+                            width = if (agentOpen || AgentRun.isRunning) 2.dp else 0.dp,
+                            color = if (agentOpen || AgentRun.isRunning) C.toolActiveBg else Color.Transparent,
+                            shape = RoundedCornerShape(6.dp)
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AutoAwesome,
+                        contentDescription = "AI Agent",
+                        tint = if (agentOpen || AgentRun.isRunning) C.toolIconActive else C.toolIcon,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
 
             PalettePanel(
@@ -457,6 +485,10 @@ fun EditorScreen() {
 
     if (mcpOpen) {
         McpSheet(onDismiss = { mcpOpen = false })
+    }
+
+    if (agentOpen) {
+        AgentSheet(onDismiss = { agentOpen = false })
     }
 
     if (layersOpen) {

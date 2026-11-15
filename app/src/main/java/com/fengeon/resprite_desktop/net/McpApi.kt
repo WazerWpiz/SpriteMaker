@@ -30,6 +30,7 @@ import com.fengeon.resprite_desktop.engine.RespriteEngine
 import com.fengeon.resprite_desktop.model.Size
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -66,8 +67,9 @@ object McpApi {
     /** Tool catalogue, also served by the 'list_tools' call. */
     private val TOOLS = listOf(
         "ping", "help",
-        "get_state", "get_canvas", "get_layer_canvas", "get_pixel", "get_palette",
+        "get_state", "get_canvas", "get_layer_canvas", "get_pixel", "get_palette", "get_canvas_ascii",
         "draw_pixel", "draw_pixels", "draw_line", "draw_rect", "draw_ellipse", "draw_polyline",
+        "draw_sprite_from_ascii",
         "fill", "erase_pixel", "erase_pixels", "clear_layer",
         "set_color", "set_secondary_color",
         "add_layer", "delete_layer", "duplicate_layer", "move_layer",
@@ -86,6 +88,13 @@ object McpApi {
                 put("tools", buildJsonArray { TOOLS.forEach { add(JsonPrimitive(it)) } })
                 put("colors", "ARGB ints, e.g. -65536 = opaque red (#FFFF0000). Use 0xFF000000.toInt() style values.")
                 put("coords", "canvas pixels, origin top-left, inclusive")
+                put(
+                    "recommended",
+                    "Call get_canvas_ascii first: it returns the canvas as a text grid plus a " +
+                        "symbol->colour legend. Edit that grid and send it back with " +
+                        "draw_sprite_from_ascii (args: ascii, legend, clear, offset_x, offset_y). " +
+                        "This avoids guessing pixel coordinates."
+                )
             })
         }.toString()
 
@@ -95,6 +104,7 @@ object McpApi {
         "get_layer_canvas" -> getCanvas(allLayers = false)
         "get_pixel" -> getPixel(a)
         "get_palette" -> getPalette()
+        "get_canvas_ascii" -> getCanvasAscii()
 
         // drawing
         "draw_pixel" -> drawPixel(a)
@@ -103,6 +113,7 @@ object McpApi {
         "draw_rect" -> shape(a, Shape.Rect)
         "draw_ellipse" -> shape(a, Shape.Ellipse)
         "draw_polyline" -> polyline(a)
+        "draw_sprite_from_ascii" -> drawSpriteFromAscii(a)
         "fill" -> fill(a)
         "erase_pixel" -> erasePixel(a)
         "erase_pixels" -> erasePixels(a)
@@ -230,6 +241,149 @@ object McpApi {
                 put("secondary", s.secondaryColor)
             })
         }.toString()
+    }
+
+    /**
+     * Renders the current frame as an ASCII grid so a text-only model can
+     * actually SEE the canvas it is drawing on.
+     *
+     * One character per pixel, one row per line of output, and a legend mapping
+     * every character back to its colour. Transparent pixels are "." so an empty
+     * canvas reads as a grid of dots. Anything larger than 64x64 is downsampled
+     * with the top-left pixel of each block, so the reply stays a manageable size
+     * and tallies with the ASCII sprite format draw_sprite_from_ascii accepts.
+     */
+    private fun getCanvasAscii(): String = RespriteEngine.onMain {
+        val s = RespriteEngine.state
+        val w = s.canvasWidth
+        val h = s.canvasHeight
+        val bmp = Compositor.flatten(s)
+        val stepX = (w + 63) / 64
+        val stepY = (h + 63) / 64
+        val cols = (w + stepX - 1) / stepX
+        val rows = (h + stepY - 1) / stepY
+
+        val symbols = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        val colourToSymbol = LinkedHashMap<Int, Char>()
+        val legend = buildJsonObject {
+            put(".", "%08X".format(0))
+        }
+        val sb = StringBuilder()
+        for (row in 0 until rows) {
+            for (col in 0 until cols) {
+                val x = (col * stepX).coerceAtMost(w - 1)
+                val y = (row * stepY).coerceAtMost(h - 1)
+                val argb = bmp.getPixel(x, y)
+                if (Color.alpha(argb) == 0) {
+                    sb.append('.')
+                } else {
+                    val sym = colourToSymbol.getOrPut(argb) {
+                        symbols[colourToSymbol.size.coerceAtMost(symbols.length - 1)]
+                    }
+                    legend.put(sym.toString(), "%08X".format(argb))
+                    sb.append(sym)
+                }
+            }
+            if (row < rows - 1) sb.append('\n')
+        }
+        bmp.recycle()
+        buildJsonObject {
+            put("ok", true)
+            put("result", buildJsonObject {
+                put("format", "ascii")
+                put("canvasWidth", w)
+                put("canvasHeight", h)
+                put("gridWidth", cols)
+                put("gridHeight", rows)
+                put(
+                    "meaning",
+                    "one character per pixel, each row is one line, '.' = transparent. " +
+                        "Legend maps symbol -> AARRGGBB hex. Use this grid as the `ascii` " +
+                        "argument of draw_sprite_from_ascii to edit it."
+                )
+                put("legend", legend)
+                put("grid", sb.toString())
+            })
+        }.toString()
+    }
+
+    /**
+     * Draws a sprite written as text — the most reliable way for a text-only
+     * model to produce pixel art, because coordinates stop being guessed.
+     *
+     * `ascii` holds one character per pixel with rows separated by newlines.
+     * `legend` maps each character to a colour (ARGB int, "#RRGGBB"/"#AARRGGBB"
+     * hex, or "r,g,b,a" 0-255). Characters with no legend entry are skipped, so
+     * spaces can be used for "leave alone". `offset_x`/`offset_y` place the grid,
+     * and `clear` wipes the layer first when true.
+     */
+    private fun drawSpriteFromAscii(a: JsonObject): String {
+        val ascii = a["ascii"]?.jsonPrimitive?.content
+            ?: throw IllegalArgumentException("missing string 'ascii'")
+        val clear = a.boolArg("clear") ?: true
+        val offsetX = a.optIntArg("offset_x") ?: 0
+        val offsetY = a.optIntArg("offset_y") ?: 0
+        val legend = HashMap<Char, Int>()
+        (a["legend"] as? JsonObject)?.forEach { (ch, value) ->
+            if (ch.length == 1) {
+                val colour = parseColour(value) ?: return@forEach
+                legend[ch[0]] = colour
+            }
+        }
+        return RespriteEngine.onMain {
+            val s = RespriteEngine.state
+            val cellId = s.ensureCell(s.selectedLayerIndex, s.selectedFrameIndex)
+            if (clear) {
+                RespriteEngine.undo.execute(s, ClearCellCmd(cellId))
+            }
+            // One undo entry per distinct colour keeps the existing single-colour
+            // command and holds a single snapshot per group.
+            val byColour = LinkedHashMap<Int, ArrayList<Pair<Int, Int>>>()
+            val lines = ascii.split('\n')
+            for (row, line in lines.withIndex()) {
+                for (col, ch in line.withIndex()) {
+                    if (ch == '.' || ch == ' ') continue
+                    val colour = legend[ch] ?: continue
+                    val x = offsetX + col
+                    val y = offsetY + row
+                    if (x < 0 || y < 0 || x >= s.canvasWidth || y >= s.canvasHeight) continue
+                    byColour.getOrPut(colour) { ArrayList() }.add(x to y)
+                }
+            }
+            var painted = 0
+            for ((colour, points) in byColour) {
+                RespriteEngine.undo.execute(s, PixelSetCmd(cellId, points, colour))
+                painted += points.size
+            }
+            RespriteEngine.touch()
+            buildJsonObject {
+                put("ok", true)
+                put("result", buildJsonObject {
+                    put("painted", painted)
+                    put("colours", byColour.size)
+                    put("rows", lines.size)
+                })
+            }.toString()
+        }
+    }
+
+    /** Accepts "#RRGGBB", "#AARRGGBB", "r,g,b,a", or an ARGB int. */
+    private fun parseColour(value: JsonElement): Int? {
+        val raw = (value as? JsonPrimitive)?.content?.trim() ?: return null
+        if (raw.isEmpty()) return null
+        if (raw.contains(',')) {
+            val parts = raw.split(',').map { it.trim().toIntOrNull() ?: return null }
+            if (parts.size < 3) return null
+            val r = parts[0].coerceIn(0, 255)
+            val g = parts[1].coerceIn(0, 255)
+            val b = parts[2].coerceIn(0, 255)
+            val al = parts.getOrNull(3)?.coerceIn(0, 255) ?: 255
+            return (al shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        val hex = raw.removePrefix("#")
+        if (hex.length == 6) return ("FF$hex").toLongOrNull(16)?.toInt()
+        if (hex.length == 8) return hex.toLongOrNull(16)?.toInt()
+        return raw.toIntOrNull()
     }
 
     // ---- drawing ---------------------------------------------------------
