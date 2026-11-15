@@ -234,7 +234,7 @@ fun EditorScreen() {
                     IconButton(onClick = { saveLauncher.launch("sprite.resprite") }) {
                         Icon(Icons.Filled.Save, "Save", tint = MaterialTheme.colorScheme.onSurface)
                     }
-                    IconButton(onClick = { exportOpen = true; exportStatus = ""; exportSheetState.show() }) {
+                    IconButton(onClick = { exportOpen = true; exportStatus = "" }) {
                         Icon(Icons.Filled.FileDownload, "Export", tint = MaterialTheme.colorScheme.onSurface)
                     }
                 }
@@ -432,8 +432,8 @@ fun EditorScreen() {
         ModalBottomSheet(
             onDismissRequest = { exportOpen = false },
             sheetState = exportSheetState,
-            sheetShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-            sheetContentColor = C.panel
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            containerColor = C.panel
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                 Text("Export", color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
