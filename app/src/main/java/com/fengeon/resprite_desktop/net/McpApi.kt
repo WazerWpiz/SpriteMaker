@@ -265,9 +265,6 @@ object McpApi {
 
         val symbols = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
         val colourToSymbol = LinkedHashMap<Int, Char>()
-        val legend = buildJsonObject {
-            put(".", "%08X".format(0))
-        }
         val sb = StringBuilder()
         for (row in 0 until rows) {
             for (col in 0 until cols) {
@@ -280,11 +277,18 @@ object McpApi {
                     val sym = colourToSymbol.getOrPut(argb) {
                         symbols[colourToSymbol.size.coerceAtMost(symbols.length - 1)]
                     }
-                    legend.put(sym.toString(), "%08X".format(argb))
                     sb.append(sym)
                 }
             }
             if (row < rows - 1) sb.append('\n')
+        }
+        bmp.recycle()
+        // Built from the collected map: a finished JsonObject has no put().
+        val legend = buildJsonObject {
+            put(".", "%08X".format(0))
+            colourToSymbol.forEach { (argb, sym) ->
+                put(sym.toString(), "%08X".format(argb))
+            }
         }
         bmp.recycle()
         buildJsonObject {
@@ -341,7 +345,10 @@ object McpApi {
             val byColour = LinkedHashMap<Int, ArrayList<Pair<Int, Int>>>()
             val lines = ascii.split('\n')
             for (row, line in lines.withIndex()) {
-                for (col, ch in line.withIndex()) {
+                // String is a CharSequence, not an Iterable<Char>, so it has no
+                // withIndex(); index into it directly instead.
+                for (col in line.indices) {
+                    val ch = line[col]
                     if (ch == '.' || ch == ' ') continue
                     val colour = legend[ch] ?: continue
                     val x = offsetX + col
