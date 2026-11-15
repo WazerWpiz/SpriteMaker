@@ -210,8 +210,9 @@ fun EditorScreen() {
                                 RoundedCornerShape(6.dp)
                             )
                             .border(
-                                if (tool == t) C.toolActiveBg else Color.Transparent,
-                                RoundedCornerShape(6.dp)
+                                width = if (tool == t) 2.dp else 0.dp,
+                                color = if (tool == t) C.toolActiveBg else Color.Transparent,
+                                shape = RoundedCornerShape(6.dp)
                             )
                     ) {
                         Icon(
