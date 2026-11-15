@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_primary">#FF2B2B2B</color>
+    <color name="brand_primary_dark">#FF1A1A1A</color>
+    <color name="brand_accent">#FF4FC3F7</color>
+    <color name="brand_background">#FF202020</color>
+    <color name="brand_surface">#FF2D2D2D</color>
+    <color name="brand_on_surface">#FFEDEDED</color>
+    <color name="checker_a">#FF9E9E9E</color>
+    <color name="checker_b">#FFCFCFCF</color>
+</resources>
