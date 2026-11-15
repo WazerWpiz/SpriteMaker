@@ -413,7 +413,7 @@ fun McpSheet(onDismiss: () -> Unit) {
                 label = { Text("Prompt", fontSize = 11.sp) },
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 minLines = 3,
-                keyboardActions = androidx.compose.ui.text.input.KeyboardActions(onDone = {
+                keyboardActions = KeyboardActions(onDone = {
                     if (!agentRunning && agentConfig.isConfigured(context) && agentPrompt.isNotBlank()) {
                         runAgent()
                     }
