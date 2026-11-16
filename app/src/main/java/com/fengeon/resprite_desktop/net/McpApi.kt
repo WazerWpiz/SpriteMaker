@@ -104,7 +104,7 @@ object McpApi {
         "get_layer_canvas" -> getCanvas(allLayers = false)
         "get_pixel" -> getPixel(a)
         "get_palette" -> getPalette()
-        "get_canvas_ascii" -> getCanvasAscii()
+        "get_canvas_ascii" -> getCanvasAscii(allLayers = a.boolArg("allLayers") ?: true)
 
         // drawing
         "draw_pixel" -> drawPixel(a)
@@ -253,56 +253,105 @@ object McpApi {
      * with the top-left pixel of each block, so the reply stays a manageable size
      * and tallies with the ASCII sprite format draw_sprite_from_ascii accepts.
      */
-    private fun getCanvasAscii(): String = RespriteEngine.onMain {
+    private fun getCanvasAscii(allLayers: Boolean = true): String = RespriteEngine.onMain {
         val s = RespriteEngine.state
         val w = s.canvasWidth
         val h = s.canvasHeight
-        val bmp = Compositor.flatten(s)
-        val stepX = (w + 63) / 64
-        val stepY = (h + 63) / 64
+
+        // Symbols must be STABLE for a given colour across every call, otherwise
+        // a grid copied from one reply next to a legend from another reply gets
+        // repainted in the wrong colours. A preferred slot is derived from the
+        // colour value itself, never from the order colours happen to appear in.
+        val symbols = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+        // Downsample until the palette fits the symbol alphabet, so every colour
+        // present gets its own character instead of two sharing one.
+        var stepX = (w + 63) / 64
+        var stepY = (h + 63) / 64
+        val bmp: Bitmap = if (allLayers) {
+            Compositor.flatten(s)
+        } else {
+            val id = s.cellIdFor(s.selectedLayerIndex, s.selectedFrameIndex)
+            val src = id?.let { s.cellBitmaps[it] }
+            val copy = Bitmap.createBitmap(w.coerceAtLeast(1), h.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+            if (src != null) Canvas(copy).drawBitmap(src, 0f, 0f, null)
+            copy
+        }
+
+        fun preferredSlot(argb: Int): Int {
+            // Mix the channels so neighbouring colours land on different slots.
+            val a = (argb ushr 24) and 0xFF
+            val r = (argb ushr 16) and 0xFF
+            val g = (argb ushr 8) and 0xFF
+            val b = argb and 0xFF
+            return ((a * 7 + r * 13 + g * 17 + b * 23) + (r xor (g shl 2) xor b)) % symbols.length
+        }
+
+        // Two passes so the symbol map does not depend on scan order.
+        val distinct = HashSet<Int>()
+        while (true) {
+            distinct.clear()
+            val sx = stepX.coerceAtLeast(1)
+            val sy = stepY.coerceAtLeast(1)
+            for (y in 0 until h step sy) {
+                for (x in 0 until w step sx) {
+                    val argb = bmp.getPixel(x, y)
+                    if (Color.alpha(argb) != 0) distinct.add(argb)
+                }
+            }
+            if (distinct.size <= symbols.length || (sx >= w && sy >= h)) break
+            stepX += 1
+            stepY += 1
+        }
+
+        val colourToSymbol = HashMap<Int, Char>()
+        val takenSlots = HashSet<Int>()
+        for (argb in distinct) {
+            var slot = preferredSlot(argb)
+            while (takenSlots.contains(slot)) slot = (slot + 1) % symbols.length
+            takenSlots.add(slot)
+            colourToSymbol[argb] = symbols[slot]
+        }
+
         val cols = (w + stepX - 1) / stepX
         val rows = (h + stepY - 1) / stepY
-
-        val symbols = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-        val colourToSymbol = LinkedHashMap<Int, Char>()
         val sb = StringBuilder()
         for (row in 0 until rows) {
             for (col in 0 until cols) {
                 val x = (col * stepX).coerceAtMost(w - 1)
                 val y = (row * stepY).coerceAtMost(h - 1)
                 val argb = bmp.getPixel(x, y)
-                if (Color.alpha(argb) == 0) {
-                    sb.append('.')
-                } else {
-                    val sym = colourToSymbol.getOrPut(argb) {
-                        symbols[colourToSymbol.size.coerceAtMost(symbols.length - 1)]
-                    }
-                    sb.append(sym)
-                }
+                sb.append(if (Color.alpha(argb) == 0) '.' else colourToSymbol[argb] ?: '?')
             }
             if (row < rows - 1) sb.append('\n')
         }
         bmp.recycle()
-        // Built from the collected map: a finished JsonObject has no put().
+
         val legend = buildJsonObject {
             put(".", "%08X".format(0))
-            colourToSymbol.forEach { (argb, sym) ->
-                put(sym.toString(), "%08X".format(argb))
-            }
+            colourToSymbol.forEach { (argb, sym) -> put(sym.toString(), "%08X".format(argb)) }
         }
         buildJsonObject {
             put("ok", true)
             put("result", buildJsonObject {
                 put("format", "ascii")
+                put("allLayers", allLayers)
                 put("canvasWidth", w)
                 put("canvasHeight", h)
                 put("gridWidth", cols)
                 put("gridHeight", rows)
+                put("selectedLayer", s.selectedLayerIndex)
+                put("selectedFrame", s.selectedFrameIndex)
+                put("layerCount", s.document.layerDatas.size)
+                put("frameCount", s.document.frameDatas.size)
                 put(
                     "meaning",
                     "one character per pixel, each row is one line, '.' = transparent. " +
-                        "Legend maps symbol -> AARRGGBB hex. Use this grid as the `ascii` " +
-                        "argument of draw_sprite_from_ascii to edit it."
+                        "Legend maps symbol -> AARRGGBB hex and the same colour always " +
+                        "gets the same symbol in every call. Pass this grid straight back " +
+                        "as the `ascii` argument of draw_sprite_from_ascii. allLayers=" +
+                        "$allLayers: when false only the selected layer is shown, which is " +
+                        "what draw_sprite_from_ascii edits."
                 )
                 put("legend", legend)
                 put("grid", sb.toString())
@@ -321,11 +370,23 @@ object McpApi {
      * and `clear` wipes the layer first when true.
      */
     private fun drawSpriteFromAscii(a: JsonObject): String {
-        val ascii = a["ascii"]?.jsonPrimitive?.content
+        val raw = a["ascii"]?.jsonPrimitive?.content
             ?: throw IllegalArgumentException("missing string 'ascii'")
         val clear = a.boolArg("clear") ?: true
         val offsetX = a.optIntArg("offset_x") ?: 0
         val offsetY = a.optIntArg("offset_y") ?: 0
+        // Draw into an explicit cell instead of whatever the UI happens to have
+        // selected: playback and a stray tap both move the selection.
+        val targetLayer = a.optIntArg("layer")
+        val targetFrame = a.optIntArg("frame")
+
+        // Models emit every escape variant; normalise before counting characters or
+        // a grid of 16 rows can silently become 15.
+        val ascii = raw
+            .replace("\\r\\n", "\n")
+            .replace("\\r", "\n")
+            .replace("\\n", "\n")
+
         val legend = HashMap<Char, Int>()
         (a["legend"] as? JsonObject)?.forEach { (ch, value) ->
             if (ch.length == 1) {
@@ -335,42 +396,101 @@ object McpApi {
         }
         return RespriteEngine.onMain {
             val s = RespriteEngine.state
-            val cellId = s.ensureCell(s.selectedLayerIndex, s.selectedFrameIndex)
-            if (clear) {
-                RespriteEngine.undo.execute(s, ClearCellCmd(cellId))
-            }
-            // One undo entry per distinct colour keeps the existing single-colour
-            // command and holds a single snapshot per group.
-            val byColour = LinkedHashMap<Int, ArrayList<Pair<Int, Int>>>()
-            val lines = ascii.split('\n')
-            // Plain index loops: String is a CharSequence (no withIndex/Iterable<Char>),
-            // and the compiler resolves that ambiguously here.
-            for (row in lines.indices) {
-                val line = lines[row]
-                for (col in line.indices) {
-                    val ch = line[col]
-                    if (ch == '.' || ch == ' ') continue
-                    val colour = legend[ch] ?: continue
-                    val x = offsetX + col
-                    val y = offsetY + row
-                    if (x < 0 || y < 0 || x >= s.canvasWidth || y >= s.canvasHeight) continue
-                    byColour.getOrPut(colour) { ArrayList() }.add(x to y)
+            val prevLayer = s.selectedLayerIndex
+            val prevFrame = s.selectedFrameIndex
+            if (targetLayer != null) {
+                require(targetLayer in s.document.layerDatas.indices) {
+                    "layer $targetLayer out of range (0..${s.document.layerDatas.size - 1})"
                 }
+                s.selectedLayerIndex = targetLayer
             }
-            var painted = 0
-            for ((colour, points) in byColour) {
-                RespriteEngine.undo.execute(s, PixelSetCmd(cellId, points, colour))
-                painted += points.size
+            if (targetFrame != null) {
+                require(targetFrame in s.document.frameDatas.indices) {
+                    "frame $targetFrame out of range (0..${s.document.frameDatas.size - 1})"
+                }
+                s.selectedFrameIndex = targetFrame
             }
-            RespriteEngine.touch()
-            buildJsonObject {
-                put("ok", true)
-                put("result", buildJsonObject {
-                    put("painted", painted)
-                    put("colours", byColour.size)
-                    put("rows", lines.size)
-                })
-            }.toString()
+
+            try {
+                val cellId = s.ensureCell(s.selectedLayerIndex, s.selectedFrameIndex)
+                if (clear) {
+                    RespriteEngine.undo.execute(s, ClearCellCmd(cellId))
+                }
+
+                val lines = ascii.split('\n')
+                // Validate before painting: a ragged grid draws a skewed sprite
+                // with no warning, and LLMs miscount on a 64-wide grid constantly.
+                val rowLengths = lines.map { it.length }
+                val raggedRows = rowLengths.withIndex().filter { it.value != rowLengths.first() }
+
+                // Collect points per colour. One undo entry per colour keeps the
+                // existing single-colour command and one snapshot per group.
+                val byColour = LinkedHashMap<Int, ArrayList<Pair<Int, Int>>>()
+                for (row in lines.indices) {
+                    val line = lines[row]
+                    for (col in line.indices) {
+                        val ch = line[col]
+                        if (ch == '.' || ch == ' ') continue
+                        val colour = legend[ch] ?: continue
+                        val x = offsetX + col
+                        val y = offsetY + row
+                        if (x < 0 || y < 0 || x >= s.canvasWidth || y >= s.canvasHeight) continue
+                        byColour.getOrPut(colour) { ArrayList() }.add(x to y)
+                    }
+                }
+                var painted = 0
+                for ((colour, points) in byColour) {
+                    RespriteEngine.undo.execute(s, PixelSetCmd(cellId, points, colour))
+                    painted += points.size
+                }
+                RespriteEngine.touch()
+
+                buildJsonObject {
+                    put("ok", true)
+                    put("result", buildJsonObject {
+                        put("painted", painted)
+                        put("colours", byColour.size)
+                        put("rows", lines.size)
+                        put("layer", s.selectedLayerIndex)
+                        put("frame", s.selectedFrameIndex)
+                        val warnings = buildJsonArray {
+                            if (raggedRows.isNotEmpty()) {
+                                add(
+                                    JsonPrimitive(
+                                        "rows have different lengths " +
+                                            "${rowLengths.distinct().sorted()}; pad them with " +
+                                            "'.' before sending"
+                                    )
+                                )
+                            }
+                            if (clear && offsetX == 0 && offsetY == 0 &&
+                                lines.size < s.canvasHeight
+                            ) {
+                                add(
+                                    JsonPrimitive(
+                                        "grid has ${lines.size} rows but the canvas is " +
+                                            "${s.canvasHeight} tall; the rest stays empty"
+                                    )
+                                )
+                            }
+                            if (painted == 0) {
+                                add(
+                                    JsonPrimitive(
+                                        "nothing painted: the legend had no entry for the " +
+                                            "characters used. Add them to `legend`."
+                                    )
+                                )
+                            }
+                        }
+                        if (warnings.isNotEmpty()) put("warnings", warnings)
+                    })
+                }.toString()
+            } finally {
+                // Leave the UI on the cell the user was looking at.
+                s.selectedLayerIndex = prevLayer
+                s.selectedFrameIndex = prevFrame
+                RespriteEngine.touch()
+            }
         }
     }
 

@@ -414,20 +414,29 @@ object AgentClient {
      */
     private fun toolSchemas(): List<ToolSchema> = listOf(
         ToolSchema(
-            "get_canvas_ascii", emptyList(),
-            "CALL THIS FIRST — returns the canvas as a text grid plus a colour legend"
+            "get_canvas_ascii",
+            listOf(bArg("allLayers", required = false)),
+            "CALL THIS FIRST — canvas as a text grid plus a colour legend. " +
+                "Symbols are stable for a colour across calls."
         ),
-        ToolSchema("get_state", emptyList(), "canvas size, layer and frame counts"),
+        ToolSchema(
+            "get_state",
+            emptyList(),
+            "canvas size, selected layer/frame, layer and frame counts"
+        ),
         ToolSchema(
             "draw_sprite_from_ascii",
             listOf(
                 sArg("ascii", "one character per pixel, rows separated by newlines"),
                 oArg("legend", "object mapping character -> colour"),
-                bArg("clear", required = false),
+                bArg("clear", "wipe the target cell first", required = false),
                 iArg("offset_x", "grid placement", required = false),
-                iArg("offset_y", "grid placement", required = false)
+                iArg("offset_y", "grid placement", required = false),
+                iArg("layer", "draw into this layer instead of the selected one", required = false),
+                iArg("frame", "draw into this frame instead of the selected one", required = false)
             ),
-            "BEST way to draw — whole sprite in one call"
+            "BEST way to draw — whole sprite in one call. Pass layer/frame when " +
+                "working on an animation so the drawing lands on the right cell."
         ),
         ToolSchema(
             "draw_rect",
@@ -464,7 +473,16 @@ object AgentClient {
         ),
         ToolSchema("clear_layer", emptyList()),
         ToolSchema("add_layer", emptyList()),
-        ToolSchema("add_frame", emptyList()),
+        ToolSchema(
+            "add_frame",
+            emptyList(),
+            "append a new blank frame; it becomes the selected one"
+        ),
+        ToolSchema(
+            "duplicate_frame",
+            emptyList(),
+            "copy the selected frame, so the next one starts identical"
+        ),
         ToolSchema("undo", emptyList()),
         ToolSchema("get_frames", emptyList()),
         ToolSchema("select_frame", listOf(iArg("index"))),
@@ -620,6 +638,16 @@ object AgentClient {
         sb.append("- You may call more than one tool in a single reply when they are independent.\n")
         sb.append("- Only when the drawing really is complete do you reply with plain text " +
             "(no tool call) and a one-line summary.\n\n")
+        sb.append("ANIMATION (when the user asks for more than one frame):\n")
+        sb.append("- NEVER redraw a frame from memory. Fixup-only keeps shapes aligned.\n")
+        sb.append("- Correct sequence per frame: get_state, duplicate_frame, " +
+            "get_canvas_ascii, then draw_sprite_from_ascii with ONLY the pixels that move.\n")
+        sb.append("- Keep the legend byte-for-byte identical between frames: the same character " +
+            "must mean the same colour in every frame, or colours shift between them.\n")
+        sb.append("- Pass the frame index explicitly (frame=N) so the drawing cannot land on the " +
+            "wrong cell if the user touches the frame strip.\n")
+        sb.append("- Draw the SAME size every frame and keep the subject anchored to the same " +
+            "origin; shift it by whole pixels only.\n\n")
         sb.append("COLOURS on the wire: ARGB ints (-65536 = opaque red, -1 = opaque white, 0 = transparent) ")
         sb.append("OR strings: \"#RRGGBB\", \"#AARRGGBB\", or \"r,g,b,a\" 0-255.\n")
         sb.append("COORDINATES: origin top-left, inclusive, so x=0,y=0 is the first pixel.\n\n")
