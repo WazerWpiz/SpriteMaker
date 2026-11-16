@@ -94,6 +94,11 @@ object AgentRun {
                     success = true
                 )
             },
+            onReply = { text ->
+                // Show what the model actually said, so a reply with no tool call
+                // can be told apart from a tool call that failed to run.
+                logLine("model: ${text.take(220)}")
+            },
             onResult = { result ->
                 running = false
                 logLine(if (result.success) "done: ${result.text}" else "error: ${result.text}")

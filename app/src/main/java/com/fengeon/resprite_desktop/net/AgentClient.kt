@@ -46,6 +46,8 @@ object AgentClient {
         userPrompt: String,
         isCancelled: () -> Boolean = { false },
         onStep: (step: Int, tool: String?, args: String?) -> Unit,
+        /** Called with whatever the model wrote, so the log can show it. */
+        onReply: (String) -> Unit = {},
         onResult: (Result) -> Unit
     ) {
         if (!AgentConfig.isConfigured(context)) {
@@ -58,6 +60,8 @@ object AgentClient {
             // Conversation history. A mutable list of messages, serialised to a
             // JsonArray on every request (kotlinx JsonArray is immutable).
             val history = mutableListOf(systemMessage(buildSystemPrompt()), userMessage(userPrompt))
+            // How many tools the model actually asked for across the whole run.
+            var toolsUsed = 0
 
             var step = 0
             while (step < maxSteps) {
@@ -65,36 +69,56 @@ object AgentClient {
                     onResult(Result(false, "Stopped by you at step $step of $maxSteps.", step))
                     return@launch
                 }
-                step++
                 val response = chatOnce(context, history)
                 if (!response.success) {
+                    // A failed request does not consume a step, so the counter the
+                    // user sees only ever counts real turns.
                     onResult(Result(false, "API error: ${response.error}", step))
                     return@launch
                 }
+                // Counted only once the reply actually arrived.
+                step++
 
-                if (response.toolCalls.isNotEmpty()) {
+                val textReply = response.content?.trim().orEmpty()
+                if (textReply.isNotEmpty()) {
+                    onReply(textReply)
+                    history.add(assistantMessage(textReply))
+                }
+
+                // Prefer the provider's own tool calls; fall back to a tool call
+                // the model wrote out as plain text (some models do that).
+                val calls = response.toolCalls.ifEmpty { parseTextToolCalls(textReply) }
+                val writtenAsText = response.toolCalls.isEmpty() && calls.isNotEmpty()
+
+                if (calls.isNotEmpty()) {
+                    toolsUsed += calls.size
                     // Record the assistant turn that requested the tools, so the
                     // provider sees a coherent conversation on the next call.
-                    history.add(
-                        buildJsonObject {
-                            put("role", "assistant")
-                            put("content", "")
-                            put("tool_calls", buildJsonArray {
-                                for (call in response.toolCalls) {
-                                    add(buildJsonObject {
-                                        put("id", call.id)
-                                        put("type", "function")
-                                        put("function", buildJsonObject {
-                                            put("name", call.name)
-                                            put("arguments", call.arguments)
+                    if (textReply.isEmpty()) {
+                        history.add(
+                            buildJsonObject {
+                                put("role", "assistant")
+                                put("content", "")
+                                put("tool_calls", buildJsonArray {
+                                    for (call in calls) {
+                                        add(buildJsonObject {
+                                            put("id", call.id)
+                                            put("type", "function")
+                                            put("function", buildJsonObject {
+                                                put("name", call.name)
+                                                put("arguments", call.arguments)
+                                            })
                                         })
-                                    })
-                                }
-                            })
-                        }
-                    )
-                    for (call in response.toolCalls) {
+                                    }
+                                })
+                            }
+                        )
+                    }
+                    for (call in calls) {
                         onStep(step, call.name, call.arguments)
+                        if (writtenAsText && call == calls.first()) {
+                            onReply("(parsed a tool call the model wrote as text)")
+                        }
                         val result = executeTool(call)
                         history.add(
                             buildJsonObject {
@@ -107,22 +131,77 @@ object AgentClient {
                     continue
                 }
 
-                val finalText = response.content ?: "No response from model."
-                onResult(Result(true, finalText, step))
+                val finalText = textReply.ifEmpty { "No response from model." }
+                val hint = if (toolsUsed == 0) {
+                    "\n\nThe model answered with text only and never called a drawing tool.\n" +
+                        "It probably does not support tool calling — try meta/llama-3.3-70b-instruct, " +
+                        "nvidia/llama-3.1-nemotron-70b-instruct, or gpt-4o-mini."
+                } else {
+                    ""
+                }
+                onResult(Result(true, finalText + hint, step))
                 return@launch
             }
 
-            onResult(Result(false, "Max steps ($maxSteps) reached without completion.", maxSteps))
+            onResult(
+                Result(
+                    false,
+                    "Reached the $maxSteps step limit without finishing. Raise max steps, " +
+                        "or ask for something smaller.",
+                    maxSteps
+                )
+            )
         }
     }
 
-    // ---- model I/O ---------------------------------------------------------
+    /**
+     * Recovers tool calls a model wrote as text instead of using the API's tool
+     * mechanism. Handles a bare object, a JSON array, a markdown ```json fence,
+     * and both the OpenAI shape ({name, arguments}) and this project's own
+     * {"tool": ..., "args": {...}} shape.
+     */
+    private fun parseTextToolCalls(text: String): List<ToolCall> {
+        if (text.isBlank()) return emptyList()
+        val cleaned = text.trim()
+            .removePrefix("```json").removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+        // Only worth trying when it at least looks like a tool payload.
+        if (!cleaned.contains("draw") && !cleaned.contains("tool") && !cleaned.contains("get_")) {
+            return emptyList()
+        }
+        val parsed = runCatching { json.parseToJsonElement(cleaned) }.getOrNull()
+            ?: return emptyList()
+        val items = when (parsed) {
+            is JsonArray -> parsed
+            is JsonObject -> buildJsonArray { add(parsed) }
+            else -> return emptyList()
+        }
+        val out = mutableListOf<ToolCall>()
+        var n = 0
+        for (el in items) {
+            val obj = el as? JsonObject ?: continue
+            // {"tool": "...", "args": {...}} — this project's own wire format.
+            val toolName = obj["tool"]?.jsonPrimitive?.content
+            if (toolName != null) {
+                val argsObj = obj["args"].let { it as? JsonObject } ?: JsonObject(emptyMap())
+                out.add(ToolCall("text_${n++}", toolName, argsObj.toString()))
+                continue
+            }
+            // {"name": "...", "arguments": {...} | "json-string"} — OpenAI shape.
+            val fnName = obj["name"]?.jsonPrimitive?.content ?: continue
+            val argNode = obj["arguments"]
+            val argString = when (argNode) {
+                is JsonObject -> argNode.toString()
+                is JsonPrimitive -> argNode.content
+                else -> "{}"
+            }
+            out.add(ToolCall("text_${n++}", fnName, argString))
+        }
+        return out
+    }
 
-    private data class ToolCall(
-        val id: String,
-        val name: String,
-        val arguments: String
-    )
+    // ---- model I/O ---------------------------------------------------------
 
     private data class ChatResponse(
         val success: Boolean,
@@ -131,10 +210,78 @@ object AgentClient {
         val toolCalls: List<ToolCall> = emptyList()
     )
 
+    private data class ToolCall(
+        val id: String,
+        val name: String,
+        val arguments: String
+    )
+
+    private fun systemMessage(content: String): JsonObject = buildJsonObject {
+        put("role", "system")
+        put("content", content)
+    }
+
+    private fun userMessage(content: String): JsonObject = buildJsonObject {
+        put("role", "user")
+        put("content", content)
+    }
+
+    private fun assistantMessage(content: String): JsonObject = buildJsonObject {
+        put("role", "assistant")
+        put("content", content)
+    }
+
+    private fun toolMessage(toolCallId: String, content: String): JsonObject = buildJsonObject {
+        put("role", "tool")
+        put("tool_call_id", toolCallId)
+        put("content", content)
+    }
+
+    private fun kotlinx.serialization.json.JsonPrimitive.contentOrNull(): String? =
+        if (this is JsonPrimitive) content else null
+
+    private fun kotlinx.serialization.json.JsonPrimitive.intOrNullSafe(): Int? =
+        runCatching { int }.getOrNull()
+
+    /** Turns an HTTP status into something a person can act on. */
+    private fun translateHttpError(code: Int, raw: String): String {
+        // Pull the provider's own message out if it sent a JSON error body.
+        val detail = runCatching {
+            json.parseToJsonElement(raw).jsonObject["error"]?.let { err ->
+                (err as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull()
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+        val hint = when (code) {
+            401 -> "API key rejected (401) — check the key, or switch provider"
+            403 -> "Provider refused the request (403) — key may lack access/credits"
+            404 -> "Model not found (404) — check the model name, or tap Load models"
+            408, 504 -> "Provider timed out — try again or lower max steps"
+            429 -> "Rate limited — wait a moment and retry"
+            in 500..599 -> "Provider error ($code) — server side, retry shortly"
+            else -> "HTTP $code"
+        }
+        return if (detail != null) "$hint\n$detail" else hint
+    }
+
+    private fun translateException(e: Exception): String = when (e) {
+        is java.net.SocketTimeoutException ->
+            "Timeout — the provider did not answer in time"
+        is java.net.UnknownHostException ->
+            "Cannot reach the provider (DNS/offline) — check the network"
+        is java.net.ConnectException ->
+            "Connection refused — check the base URL"
+        is java.io.IOException ->
+            "Network error: ${e.message ?: "I/O failure"}"
+        else -> "${e.javaClass.simpleName}: ${e.message}"
+    }
+
+    // ---- model catalogue ---------------------------------------------------
+
     data class ModelInfo(
         val id: String,
         val contextLength: Int?,
-        val supportsTools: Boolean
+        /** null = provider did not say, which is the honest answer for some. */
+        val supportsTools: Boolean?
     )
 
     data class ModelListResult(
@@ -145,9 +292,8 @@ object AgentClient {
 
     /**
      * Lists the models the configured provider exposes (`GET /models`), so the
-     * user never has to type a model id and a typo cannot silently break every
-     * run. Both OpenRouter and NVIDIA speak the OpenAI wire format, so one
-     * implementation covers them; a Custom endpoint gets the same call.
+     * user never has to type a model id. All three providers speak the OpenAI
+     * wire format, so one implementation covers them.
      */
     fun fetchModels(context: Context, callback: (ModelListResult) -> Unit) {
         CoroutineScope(Dispatchers.IO).launch {
@@ -170,9 +316,7 @@ object AgentClient {
                 val code = conn.responseCode
                 if (code >= 400) {
                     val raw = conn.errorStream?.bufferedReader()?.readText() ?: ""
-                    callback(
-                        ModelListResult(false, emptyList(), translateHttpError(code, raw))
-                    )
+                    callback(ModelListResult(false, emptyList(), translateHttpError(code, raw)))
                     return@launch
                 }
                 conn.inputStream.bufferedReader().readText()
@@ -187,13 +331,12 @@ object AgentClient {
                 val data = json.parseToJsonElement(body).jsonObject["data"] as? JsonArray
                 data?.mapNotNull { el ->
                     val obj = el.jsonObject
-                    val id = obj["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                    val id = obj["id"]?.jsonPrimitive?.contentOrNull() ?: return@mapNotNull null
                     val ctx = obj["context_length"]?.jsonPrimitive?.intOrNullSafe()
-                    // Providers disagree on where support flags live.
-                    val supportsObj = obj["supported_parameters"] as? JsonArray
-                    val supports = supportsObj?.any {
-                        it.jsonPrimitive.contentOrNull() == "tools"
-                    } ?: true
+                    // Several providers (NVIDIA among them) do not send
+                    // supported_parameters at all. Unknown, not "yes".
+                    val supports = (obj["supported_parameters"] as? JsonArray)
+                        ?.any { it.jsonPrimitive.contentOrNull() == "tools" }
                     ModelInfo(id, ctx, supports)
                 } ?: emptyList()
             }.getOrElse { emptyList() }
@@ -222,52 +365,145 @@ object AgentClient {
         }
     }
 
-    private fun kotlinx.serialization.json.JsonPrimitive.intOrNullSafe(): Int? =
-        runCatching { int }.getOrNull()
+    private data class ArgSpec(
+        val name: String,
+        val desc: String,
+        /** OpenAI JSON-schema types; more than one means "any of". */
+        val jsonTypes: List<String>,
+        val required: Boolean = true,
+        /** Element type for arrays — some providers reject a bare "array". */
+        val itemsType: String? = null
+    )
 
-    private fun kotlinx.serialization.json.JsonPrimitive.contentOrNull(): String? =
-        if (this is JsonPrimitive) content else null
-
-    /** Turns an HTTP status into something a person can act on. */
-    private fun translateHttpError(code: Int, raw: String): String {
-        // Pull the provider's own message out if it sent a JSON error body.
-        val detail = runCatching {
-            json.parseToJsonElement(raw).jsonObject["error"]?.let { err ->
-                (err as? JsonObject)?.get("message")?.jsonPrimitive?.content
+    private data class ToolSchema(
+        val name: String,
+        val args: List<ArgSpec>,
+        val note: String? = null
+    ) {
+        fun promptArgs(): String =
+            if (args.isEmpty()) "no arguments"
+            else args.joinToString(", ") { a ->
+                "${a.name}${if (a.required) "" else "?"}: ${a.desc}"
             }
-        }.getOrNull()?.takeIf { it.isNotBlank() }
-        val hint = when (code) {
-            401 -> "API key rejected (401) — check the key, or switch provider"
-            403 -> "Provider refused the request (403) — key may lack access/credits"
-            404 -> "Model not found (404) — check the model name, or tap Load models"
-            408, 504 -> "Provider timed out — try again or lower max steps"
-            429 -> "Rate limited — wait a moment and retry"
-            in 500..599 -> "Provider error ($code) — server side, retry shortly"
-            else -> "HTTP $code"
+    }
+
+    private fun iArg(name: String, desc: String = name, required: Boolean = true) =
+        ArgSpec(name, desc, listOf("integer"), required)
+
+    // A colour may arrive as an ARGB int, "#RRGGBB", or "r,g,b,a", so the schema
+    // has to accept both or strict providers reject the call.
+    private fun colourArg(name: String = "color", required: Boolean = true) =
+        ArgSpec(name, "ARGB int, \"#RRGGBB\", or \"r,g,b,a\"", listOf("integer", "string"), required)
+
+    private fun bArg(name: String = "filled", required: Boolean = true) =
+        ArgSpec(name, "boolean", listOf("boolean"), required)
+
+    private fun sArg(name: String, desc: String = name, required: Boolean = true) =
+        ArgSpec(name, desc, listOf("string"), required)
+
+    private fun aArg(name: String, desc: String, required: Boolean = true) =
+        ArgSpec(name, desc, listOf("array"), required, itemsType = "integer")
+
+    private fun oArg(name: String, desc: String, required: Boolean = true) =
+        ArgSpec(name, desc, listOf("object"), required)
+
+    /**
+     * The tool catalogue, in one place: used for BOTH the system prompt (compact
+     * prose for models that read it) and the OpenAI `tools` array below (JSON
+     * schemas the provider needs to enable function calling).
+     */
+    private fun toolSchemas(): List<ToolSchema> = listOf(
+        ToolSchema(
+            "get_canvas_ascii", emptyList(),
+            "CALL THIS FIRST — returns the canvas as a text grid plus a colour legend"
+        ),
+        ToolSchema("get_state", emptyList(), "canvas size, layer and frame counts"),
+        ToolSchema(
+            "draw_sprite_from_ascii",
+            listOf(
+                sArg("ascii", "one character per pixel, rows separated by newlines"),
+                oArg("legend", "object mapping character -> colour"),
+                bArg("clear", "wipe the layer first", required = false),
+                iArg("offset_x", "grid placement", required = false),
+                iArg("offset_y", "grid placement", required = false)
+            ),
+            "BEST way to draw — whole sprite in one call"
+        ),
+        ToolSchema(
+            "draw_rect",
+            listOf(
+                iArg("x0"), iArg("y0"), iArg("x1"), iArg("y1"),
+                colourArg(required = false), bArg(required = false)
+            )
+        ),
+        ToolSchema(
+            "draw_ellipse",
+            listOf(
+                iArg("x0"), iArg("y0"), iArg("x1"), iArg("y1"),
+                colourArg(required = false), bArg(required = false)
+            )
+        ),
+        ToolSchema(
+            "draw_line",
+            listOf(iArg("x0"), iArg("y0"), iArg("x1"), iArg("y1"), colourArg(required = false))
+        ),
+        ToolSchema(
+            "draw_pixels",
+            listOf(
+                aArg("points", "array of [x, y] pairs"),
+                colourArg(required = false)
+            )
+        ),
+        ToolSchema(
+            "draw_pixel",
+            listOf(iArg("x"), iArg("y"), colourArg(required = false))
+        ),
+        ToolSchema(
+            "fill",
+            listOf(iArg("x"), iArg("y"), colourArg(required = false))
+        ),
+        ToolSchema("clear_layer", emptyList()),
+        ToolSchema("add_layer", emptyList()),
+        ToolSchema("add_frame", emptyList()),
+        ToolSchema("undo", emptyList()),
+        ToolSchema("get_frames", emptyList()),
+        ToolSchema("select_frame", listOf(iArg("index"))),
+        ToolSchema("export_gif", listOf(sArg("name"), iArg("fps", required = false)))
+    )
+
+    /** Serialises the catalogue into the OpenAI `tools` array. */
+    private fun toolsPayload(): JsonArray = buildJsonArray {
+        for (t in toolSchemas()) {
+            add(buildJsonObject {
+                put("type", "function")
+                put("function", buildJsonObject {
+                    put("name", t.name)
+                    put(
+                        "description",
+                        t.note ?: "Pixel-art editor tool. See the system prompt for the " +
+                            "coordinate and colour conventions."
+                    )
+                    put("parameters", buildJsonObject {
+                        put("type", "object")
+                        put("properties", buildJsonObject {
+                            for (a in t.args) {
+                                put(a.name, buildJsonObject {
+                                    if (a.jsonTypes.size == 1) put("type", a.jsonTypes.first())
+                                    else put("type", buildJsonArray { a.jsonTypes.forEach { add(JsonPrimitive(it)) } })
+                                    put("description", a.desc)
+                                    // Arrays without `items` are rejected by several providers.
+                                    a.itemsType?.let { put("items", buildJsonObject { put("type", it) }) }
+                                })
+                            }
+                        })
+                        put(
+                            "required",
+                            buildJsonArray { t.args.filter { it.required }.forEach { add(JsonPrimitive(it.name)) } }
+                        )
+                    })
+                })
+            })
         }
-        return if (detail != null) "$hint\n$detail" else hint
-    }
-
-    private fun translateException(e: Exception): String = when (e) {
-        is java.net.SocketTimeoutException ->
-            "Timeout — the provider did not answer in time"
-        is java.net.UnknownHostException ->
-            "Cannot reach the provider (DNS/offline) — check the network"
-        is java.net.ConnectException ->
-            "Connection refused — check the base URL"
-        is java.io.IOException ->
-            "Network error: ${e.message ?: "I/O failure"}"
-        else -> "${e.javaClass.simpleName}: ${e.message}"
-    }
-
-    private fun systemMessage(content: String): JsonObject = buildJsonObject {
-        put("role", "system")
-        put("content", content)
-    }
-
-    private fun userMessage(content: String): JsonObject = buildJsonObject {
-        put("role", "user")
-        put("content", content)
     }
 
     private fun chatOnce(context: Context, history: List<JsonObject>): ChatResponse {
@@ -277,6 +513,10 @@ object AgentClient {
             put("messages", buildJsonArray { history.forEach { add(it) } })
             put("stream", false)
             put("tool_choice", "auto")
+            // The provider needs the tool schemas to allow function calling at
+            // all: without this array many backends silently answer with text
+            // even though tool_choice is "auto".
+            put("tools", toolsPayload())
         }.toString()
 
         // HttpURLConnection is abstract: openConnection() gives the real impl.
@@ -354,39 +594,13 @@ object AgentClient {
 
     // ---- prompt ------------------------------------------------------------
 
-    private data class ToolSchema(
-        val name: String,
-        val args: Map<String, String>,
-        val note: String? = null
-    )
-
     private fun buildSystemPrompt(): String {
-        val tools = listOf(
-            ToolSchema("ping", mapOf()),
-            ToolSchema("get_state", mapOf()),
-            ToolSchema("get_canvas_ascii", mapOf(), "RECOMMENDED FIRST — canvas as a text grid + legend"),
-            ToolSchema("get_canvas", mapOf("allLayers" to "boolean"), "PNG base64"),
-            ToolSchema("draw_sprite_from_ascii", mapOf(
-                "ascii" to "string: one char per pixel, rows separated by \\n",
-                "legend" to "object char -> colour",
-                "clear" to "boolean",
-                "offset_x" to "int", "offset_y" to "int"), "BEST way to draw"),
-            ToolSchema("draw_pixel", mapOf("x" to "int", "y" to "int", "color" to "int")),
-            ToolSchema("draw_pixels", mapOf("points" to "array<int,int>", "color" to "int")),
-            ToolSchema("draw_line", mapOf("x0" to "int", "y0" to "int", "x1" to "int", "y1" to "int", "color" to "int", "filled" to "boolean")),
-            ToolSchema("draw_rect", mapOf("x0" to "int", "y0" to "int", "x1" to "int", "y1" to "int", "color" to "int", "filled" to "boolean")),
-            ToolSchema("draw_ellipse", mapOf("x0" to "int", "y0" to "int", "x1" to "int", "y1" to "int", "color" to "int", "filled" to "boolean")),
-            ToolSchema("draw_polyline", mapOf("points" to "array<int,int>", "color" to "int")),
-            ToolSchema("fill", mapOf("x" to "int", "y" to "int", "color" to "int")),
-            ToolSchema("clear_layer", mapOf()),
-            ToolSchema("add_layer", mapOf()),
-            ToolSchema("add_frame", mapOf()),
-            ToolSchema("undo", mapOf()),
-            ToolSchema("export_gif", mapOf("name" to "string", "fps" to "int"))
-        )
-
         val sb = StringBuilder()
         sb.append("You are an AI agent controlling a pixel-art editor called Resprite.\n\n")
+        sb.append("YOU MUST ACT, NOT EXPLAIN.\n")
+        sb.append("If the user asks you to draw or change anything, call a drawing tool in your " +
+            "VERY FIRST reply. Never answer with instructions, a plan, or a code listing instead " +
+            "of a tool call — that is treated as a failure.\n\n")
         sb.append("HOW TO DRAW (important):\n")
         sb.append("You cannot see the canvas, and guessing pixel coordinates produces bad art. ")
         sb.append("Use the ASCII grid workflow instead:\n")
@@ -404,16 +618,15 @@ object AgentClient {
         sb.append("- Keep the legend small (3-8 colours) and reuse characters for the same colour.\n")
         sb.append("- Plan the art first: silhouette, then flat colours, then shading/highlights.\n")
         sb.append("- You may call more than one tool in a single reply when they are independent.\n")
-        sb.append("- When you are done, reply with plain text (no tool call) and a one-line summary.\n\n")
+        sb.append("- Only when the drawing really is complete do you reply with plain text " +
+            "(no tool call) and a one-line summary.\n\n")
         sb.append("COLOURS on the wire: ARGB ints (-65536 = opaque red, -1 = opaque white, 0 = transparent) ")
         sb.append("OR strings: \"#RRGGBB\", \"#AARRGGBB\", or \"r,g,b,a\" 0-255.\n")
         sb.append("COORDINATES: origin top-left, inclusive, so x=0,y=0 is the first pixel.\n\n")
-        sb.append("TOOLS:\n")
-        for (t in tools) {
-            val argsDesc = if (t.args.isEmpty()) "no arguments" else
-                t.args.entries.joinToString(", ") { "${it.key}:${it.value}" }
+        sb.append("TOOLS (these are also declared to the API as callable functions):\n")
+        for (t in toolSchemas()) {
             val note = t.note?.let { "  // $it" } ?: ""
-            sb.append("- ${t.name}($argsDesc)$note\n")
+            sb.append("- ${t.name}(${t.promptArgs()})$note\n")
         }
         return sb.toString()
     }

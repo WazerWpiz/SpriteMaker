@@ -48,6 +48,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fengeon.resprite_desktop.net.AgentClient
 import com.fengeon.resprite_desktop.net.AgentConfig
 import com.fengeon.resprite_desktop.net.AgentRun
 import com.fengeon.resprite_desktop.ui.rsColors
@@ -72,11 +73,19 @@ fun AgentSheet(onDismiss: () -> Unit) {
 
     var prompt by remember { mutableStateOf("") }
     var configOpen by remember { mutableStateOf(false) }
+    // Model picking lives in the panel, not Settings: it is the setting most
+    // likely to need changing when a model will not call tools.
+    var model by remember { mutableStateOf(AgentConfig.model(context)) }
+    var models by remember { mutableStateOf<List<AgentClient.ModelInfo>?>(null) }
+    var modelsBusy by remember { mutableStateOf(false) }
+    var modelsError by remember { mutableStateOf<String?>(null) }
+    var modelPickerOpen by remember { mutableStateOf(false) }
 
     // Prompt history is persisted; read it when the sheet is first shown.
     LaunchedEffect(Unit) { AgentRun.loadHistory(context) }
 
-    val configured = remember { AgentConfig.isConfigured(context) }
+    // State, not a remember: it must re-evaluate after a key is saved above.
+    var configured by remember { mutableStateOf(AgentConfig.isConfigured(context)) }
     val runningNow = progress != null && progress!!.finished.not()
 
     ModalBottomSheet(
@@ -162,6 +171,123 @@ fun AgentSheet(onDismiss: () -> Unit) {
                             .verticalScroll(rememberScrollState())
                             .padding(8.dp)
                     )
+                }
+            }
+
+            // ---- model picker --------------------------------------------------
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+            ) {
+                Button(
+                    onClick = { modelPickerOpen = !modelPickerOpen },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        model.substringAfter('/') + if (modelPickerOpen) "  ▴" else "  ▾",
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                }
+                Button(
+                    onClick = {
+                        modelsBusy = true
+                        modelsError = null
+                        AgentClient.fetchModels(context) { result ->
+                            modelsBusy = false
+                            if (result.success) {
+                                models = result.models
+                                modelPickerOpen = true
+                            } else {
+                                modelsError = result.error
+                            }
+                        }
+                    },
+                    enabled = !modelsBusy && configured,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.padding(start = 8.dp)
+                ) { Text(if (modelsBusy) "…" else "Load models", fontSize = 11.sp) }
+            }
+
+            modelsError?.let { err ->
+                Text(
+                    err,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
+            if (modelPickerOpen) {
+                models?.let { list ->
+                    if (list.isEmpty()) {
+                        Text(
+                            "No models returned — tap Load models.",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    } else {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, C.divider),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 190.dp)
+                                .padding(top = 6.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                list.forEach { m ->
+                                    val ctx = m.contextLength?.let { " · ${it / 1024}K ctx" } ?: ""
+                                    // Unknown is the honest answer when a provider
+                                    // (NVIDIA, for one) omits supported_parameters.
+                                    val tools = when (m.supportsTools) {
+                                        true -> " · tools"
+                                        false -> " · no tools"
+                                        null -> ""
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                model = m.id
+                                                modelPickerOpen = false
+                                                // Persist immediately: the user should
+                                                // not have to hunt for a Save button.
+                                                AgentConfig.save(
+                                                    context,
+                                                    AgentConfig.provider,
+                                                    AgentConfig.apiKey(context),
+                                                    m.id,
+                                                    AgentConfig.baseUrl(context),
+                                                    AgentConfig.maxSteps(context)
+                                                )
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            m.id,
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = if (m.id == model) C.statusText
+                                            else MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Text(
+                                            "$ctx$tools",
+                                            fontSize = 9.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -276,9 +402,8 @@ fun AgentSheet(onDismiss: () -> Unit) {
 
             // ---- inline provider quick-set (falls back to the full sheet) -----
             if (configOpen) {
-                var key by remember { mutableStateOf(AgentConfig.apiKey(context)) }
-                var model by remember { mutableStateOf(AgentConfig.model(context)) }
-                val cfgContext = context
+                var keyField by remember { mutableStateOf(AgentConfig.apiKey(context)) }
+                var modelField by remember { mutableStateOf(model) }
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = RoundedCornerShape(12.dp),
@@ -286,8 +411,8 @@ fun AgentSheet(onDismiss: () -> Unit) {
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         OutlinedTextField(
-                            value = key,
-                            onValueChange = { key = it },
+                            value = keyField,
+                            onValueChange = { keyField = it },
                             label = { Text("API key", fontSize = 11.sp) },
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
@@ -295,8 +420,8 @@ fun AgentSheet(onDismiss: () -> Unit) {
                             modifier = Modifier.fillMaxWidth()
                         )
                         OutlinedTextField(
-                            value = model,
-                            onValueChange = { model = it },
+                            value = modelField,
+                            onValueChange = { modelField = it },
                             label = { Text("Model", fontSize = 11.sp) },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
@@ -305,16 +430,19 @@ fun AgentSheet(onDismiss: () -> Unit) {
                         Button(
                             onClick = {
                                 AgentConfig.save(
-                                    cfgContext,
+                                    context,
                                     AgentConfig.provider,
-                                    key,
-                                    model,
-                                    AgentConfig.baseUrl(cfgContext),
-                                    AgentConfig.maxSteps(cfgContext)
+                                    keyField,
+                                    modelField,
+                                    AgentConfig.baseUrl(context),
+                                    AgentConfig.maxSteps(context)
                                 )
+                                // Keep the panel's model row in step with the save.
+                                model = modelField
+                                configured = AgentConfig.isConfigured(context)
                                 configOpen = false
                             },
-                            enabled = key.isNotBlank(),
+                            enabled = keyField.isNotBlank(),
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                         ) { Text("Save") }
                     }
