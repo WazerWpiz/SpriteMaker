@@ -308,7 +308,13 @@ object McpApi {
         val takenSlots = HashSet<Int>()
         for (argb in distinct) {
             var slot = preferredSlot(argb)
-            while (takenSlots.contains(slot)) slot = (slot + 1) % symbols.length
+            // Every slot is taken only if the palette outgrew the alphabet, which
+            // the downsample above prevents; guard anyway so it can never hang.
+            var probes = 0
+            while (takenSlots.contains(slot) && probes < symbols.length) {
+                slot = (slot + 1) % symbols.length
+                probes++
+            }
             takenSlots.add(slot)
             colourToSymbol[argb] = symbols[slot]
         }
@@ -380,9 +386,12 @@ object McpApi {
         val targetLayer = a.optIntArg("layer")
         val targetFrame = a.optIntArg("frame")
 
-        // Models emit every escape variant; normalise before counting characters or
-        // a grid of 16 rows can silently become 15.
+        // Models emit every newline variant: real CRLF/CR bytes, and literals where
+        // the backslash reached us un-escaped ("\n" as two characters). Handling
+        // only one family silently merges rows and shifts the whole sprite.
         val ascii = raw
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
             .replace("\\r\\n", "\n")
             .replace("\\r", "\n")
             .replace("\\n", "\n")
