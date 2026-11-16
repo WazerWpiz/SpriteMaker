@@ -392,11 +392,11 @@ object AgentClient {
 
     // A colour may arrive as an ARGB int, "#RRGGBB", or "r,g,b,a", so the schema
     // has to accept both or strict providers reject the call.
-    private fun colourArg(name: String = "color", required: Boolean = true) =
+    private fun colourArg(name: String = "color", desc: String = "ARGB int or colour string", required: Boolean = true) =
         ArgSpec(name, "ARGB int, \"#RRGGBB\", or \"r,g,b,a\"", listOf("integer", "string"), required)
 
-    private fun bArg(name: String = "filled", required: Boolean = true) =
-        ArgSpec(name, "boolean", listOf("boolean"), required)
+    private fun bArg(name: String = "filled", desc: String = "boolean", required: Boolean = true) =
+        ArgSpec(name, desc, listOf("boolean"), required)
 
     private fun sArg(name: String, desc: String = name, required: Boolean = true) =
         ArgSpec(name, desc, listOf("string"), required)
