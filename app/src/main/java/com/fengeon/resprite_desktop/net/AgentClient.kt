@@ -423,7 +423,7 @@ object AgentClient {
             listOf(
                 sArg("ascii", "one character per pixel, rows separated by newlines"),
                 oArg("legend", "object mapping character -> colour"),
-                bArg("clear", "wipe the layer first", required = false),
+                bArg("clear", required = false),
                 iArg("offset_x", "grid placement", required = false),
                 iArg("offset_y", "grid placement", required = false)
             ),

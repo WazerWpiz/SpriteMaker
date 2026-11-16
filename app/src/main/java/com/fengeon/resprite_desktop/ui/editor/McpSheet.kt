@@ -364,7 +364,7 @@ fun McpSheet(onDismiss: () -> Unit) {
                         val current = agentModel
                         val stillThere = result.models.any { it.id == current }
                         if (!stillThere) {
-                            val pickable = result.models.firstOrNull { it.supportsTools } ?: result.models.first()
+                            val pickable = result.models.firstOrNull { it.supportsTools == true } ?: result.models.first()
                             agentModel = pickable.id
                         }
                     } else {
@@ -593,7 +593,12 @@ fun McpSheet(onDismiss: () -> Unit) {
                         ) {
                             list.forEach { m ->
                                 val ctx = m.contextLength?.let { " · ${it / 1024}K ctx" } ?: ""
-                                val tools = if (m.supportsTools) "" else " · no tools"
+                                // "Unknown" is the honest answer when a provider omits supported_parameters.
+                                val tools = when (m.supportsTools) {
+                                    true -> " · tools"
+                                    false -> " · no tools"
+                                    null -> ""
+                                }
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
